@@ -67,17 +67,17 @@ function bubbleHtml() {
   // 当前模型(大名,如 DeepSeek / GLM(订阅));订阅套餐没有单价,只报名字
   var mdl=document.createElement('div');
   mdl.style.cssText='display:none;font-size:9px;color:#7a5a2e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-  // 实时工作框(三行):干活时默认显示;点击回应等 override 期间隐藏,结束自动回到这里
+  // 实时工作框(两行):干活时默认显示;点击回应等 override 期间隐藏,结束自动回到这里
   var wk=document.createElement('div');
   wk.style.cssText='display:none;width:100%;flex-direction:column;align-items:stretch;gap:0;margin-bottom:3px;';
-  var w1=document.createElement('span');w1.style.cssText='font-size:11px;font-weight:700;color:#6b4423;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-  var w2=document.createElement('span');w2.style.cssText='font-size:11px;color:#4a3117;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-  var w3=document.createElement('span');w3.style.cssText='font-size:10px;color:#8a6a3e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-  wk.appendChild(w1);wk.appendChild(w2);wk.appendChild(w3);
+
+  var w2=document.createElement('span');w2.style.cssText='font-size:14px;font-weight:700;color:#4a3117;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+  var w3=document.createElement('span');w3.style.cssText='font-size:12px;color:#8a6a3e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+  wk.appendChild(w2);wk.appendChild(w3);
   satRow.appendChild(satLbl);satRow.appendChild(satBarRow);satRow.appendChild(mdl);
   b.appendChild(satRow);
   b.insertBefore(wk,satRow);   // 工作框排在饱食度行上面(satRow 必须先挂进 b,insertBefore 才合法)
-  b._work=wk;b._w1=w1;b._w2=w2;b._w3=w3;
+  b._work=wk;b._w2=w2;b._w3=w3;
   b._satRow=satRow;b._satLbl=satLbl;b._satBar=satBar;b._satFill=satFill;b._satCap=satCap;b._mdl=mdl;
   // 番茄钟胶囊(第 4 枚)
   b._p4=document.createElement('span');
@@ -187,7 +187,7 @@ var FR=${FRAMES_JSON};
 var PETS=${PETS_JSON};
 var SLUG=null;try{SLUG=localStorage.getItem('tokPetSlug')}catch(_){ }
 var PET=PETS.find(function(p){return p.slug===SLUG})||PETS[0];
-var VER='49';   // 页面模板版本:改了页面代码必须 +1。守卫与创建共用同一常量,避免两边写岔(曾因此不重建)
+var VER='50';   // 页面模板版本:改了页面代码必须 +1。守卫与创建共用同一常量,避免两边写岔(曾因此不重建)
 var d=document.getElementById('tok-pet');
 if(d&&d.dataset.v!==VER){d.remove();d=null;}
 if(!d){
@@ -579,7 +579,7 @@ if(d._bubble){
   var slots=[d._bubble._p1,d._bubble._p2,d._bubble._p3];
   // 对话框三种默认态互斥:点击回应(临时) > 实时工作框(工作中) > token 统计(空闲)
   if(ovTxt){slots.forEach(function(sl){sl.style.display='none'});d._bubble._p4.style.display='none';d._bubble._work.style.display='none';d._bubble._ov.textContent=ovTxt;d._bubble._ov.style.display='block';d._bubble._satRow.style.display='none';}
-  else if(WK){d._bubble._ov.style.display='none';d._bubble._work.style.display='flex';d._bubble._w1.textContent=WK.l1;d._bubble._w2.textContent=WK.l2;d._bubble._w3.textContent=WK.l3;slots.forEach(function(sl){sl.style.display='none'});d._bubble._p4.style.display='none';d._bubble._satRow.style.display='none';}
+  else if(WK){d._bubble._ov.style.display='none';d._bubble._work.style.display='flex';d._bubble._w2.textContent=WK.l2;d._bubble._w3.textContent=WK.l3;slots.forEach(function(sl){sl.style.display='none'});d._bubble._p4.style.display='none';d._bubble._satRow.style.display='none';}
   else{d._bubble._ov.style.display='none';d._bubble._work.style.display='none';
   for(var pi=0;pi<3;pi++){
     var bd=BADGES[pi];
