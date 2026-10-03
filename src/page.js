@@ -67,6 +67,15 @@ function bubbleHtml() {
   // 当前模型(大名,如 DeepSeek / GLM(订阅));订阅套餐没有单价,只报名字
   var mdl=document.createElement('div');
   mdl.style.cssText='display:none;font-size:9px;color:#7a5a2e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+  // 实时工作框(三行):干活时默认显示;点击回应等 override 期间隐藏,结束自动回到这里
+  var wk=document.createElement('div');
+  wk.style.cssText='display:none;width:100%;flex-direction:column;align-items:stretch;gap:0;margin-bottom:3px;';
+  var w1=document.createElement('span');w1.style.cssText='font-size:11px;font-weight:700;color:#6b4423;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+  var w2=document.createElement('span');w2.style.cssText='font-size:11px;color:#4a3117;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+  var w3=document.createElement('span');w3.style.cssText='font-size:10px;color:#8a6a3e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+  wk.appendChild(w1);wk.appendChild(w2);wk.appendChild(w3);
+  b.insertBefore(wk,satRow);
+  b._work=wk;b._w1=w1;b._w2=w2;b._w3=w3;
   satRow.appendChild(satLbl);satRow.appendChild(satBarRow);satRow.appendChild(mdl);
   b.appendChild(satRow);
   b._satRow=satRow;b._satLbl=satLbl;b._satBar=satBar;b._satFill=satFill;b._satCap=satCap;b._mdl=mdl;
@@ -178,7 +187,7 @@ var FR=${FRAMES_JSON};
 var PETS=${PETS_JSON};
 var SLUG=null;try{SLUG=localStorage.getItem('tokPetSlug')}catch(_){ }
 var PET=PETS.find(function(p){return p.slug===SLUG})||PETS[0];
-var VER='46';   // 页面模板版本:改了页面代码必须 +1。守卫与创建共用同一常量,避免两边写岔(曾因此不重建)
+var VER='47';   // 页面模板版本:改了页面代码必须 +1。守卫与创建共用同一常量,避免两边写岔(曾因此不重建)
 var d=document.getElementById('tok-pet');
 if(d&&d.dataset.v!==VER){d.remove();d=null;}
 if(!d){
@@ -564,10 +573,12 @@ if(d._bubble){
   if(OVR&&OVR.until>now3)window.__tokGotOvrAt=now3;
   if(d._ovrTxt!==((OVR&&OVR.until>now3)?OVR.text:'')){d._ovrTxt=(OVR&&OVR.until>now3)?OVR.text:'';d._ovrAt=now3;} // 记下当前这段 override 是什么时候出现的
   var iOK=d._instant&&d._instant.until>now3;
+  var WK=EXT.work||null;   // 实时工作框内容(守护每拍下发,阶段变化即重注入)
   // 优先级:戳晕彩蛋 > 比 override 更新的点击回应 > override(工具反应/番茄钟到/喂食等) > 无
   var ovTxt=(d._instant&&d._instant.pri==='egg'&&iOK)?d._instant.text:(iOK&&(!(OVR&&OVR.until>now3)||(d._ovrAt||0)<=(d._instant.at||0))?d._instant.text:((OVR&&OVR.until>now3)?OVR.text:''));
   var slots=[d._bubble._p1,d._bubble._p2,d._bubble._p3];
-  if(ovTxt){slots.forEach(function(sl){sl.style.display='none'});d._bubble._p4.style.display='none';d._bubble._ov.textContent=ovTxt;d._bubble._ov.style.display='block';d._bubble._satRow.style.display='none';}else{d._bubble._ov.style.display='none';
+  if(ovTxt){slots.forEach(function(sl){sl.style.display='none'});d._bubble._p4.style.display='none';d._bubble._work.style.display='none';d._bubble._ov.textContent=ovTxt;d._bubble._ov.style.display='block';d._bubble._satRow.style.display='none';}else{d._bubble._ov.style.display='none';
+  if(WK){d._bubble._work.style.display='flex';d._bubble._w1.textContent=WK.l1;d._bubble._w2.textContent=WK.l2;d._bubble._w3.textContent=WK.l3;}else d._bubble._work.style.display='none';
   for(var pi=0;pi<3;pi++){
     var bd=BADGES[pi];
     if(bd){var cf=CLS[bd.c]||CLS.turn;
@@ -589,7 +600,7 @@ if(d._bubble){
   d._bubble._satRow.style.display=BADGES.length?'flex':'none';
   if(POM&&POM.left){d._bubble._p4.style.display='inline-block';d._bubble._p4.textContent='🍅 番茄钟 '+POM.left+' 分';}else d._bubble._p4.style.display='none';
   }
-  d._bubble.style.display=(ovTxt||BADGES.length)?'flex':'none';
+  d._bubble.style.display=(ovTxt||BADGES.length||WK)?'flex':'none';
 
 }
 })()`;

@@ -184,6 +184,9 @@ function todayLog() {
 }
 let logOffset = 0;
 let lastFailTs = 0;
+// 实时工作信号:来自 ZCode 自己的日志事件流(turn.phase/model.request/tool.call 的 started/completed)
+// turnOpen=true 表示当前用户回合还没结束 —— 中间再长的空窗(模型思考/慢工具)也算工作中,气泡不会中途挥手
+const workLive = { turnOpen: false, phase: null };   // phase={code:'think'|'tool', tool, since}
 function scanLogForFailures() {
   try {
     const f = todayLog();
@@ -196,11 +199,26 @@ function scanLogForFailures() {
     fs.closeSync(fd);
     logOffset = size;
     const text = buf.toString('utf8');
-    if (text.includes('"turn.failed"')) {
-      for (const line of text.split('\n')) {
-        if (line.includes('"turn.failed"')) {
-          try { const j = JSON.parse(line); lastFailTs = Date.parse(j.timestamp) || Date.now(); } catch (_) { lastFailTs = Date.now(); }
+    for (const line of text.split('\n')) {
+      if (line.indexOf('"event":') < 0) continue;
+      const failed = line.includes('"turn.failed"');
+      const isEvt = failed || line.indexOf('"turn.phase.') >= 0 || line.indexOf('"model.request.started"') >= 0 || line.indexOf('"tool.call.started"') >= 0;
+      if (!isEvt) continue;
+      let ts = Date.now();
+      try {
+        const j = JSON.parse(line);
+        if (j && j.timestamp) { const p = Date.parse(j.timestamp); if (isFinite(p)) ts = p; }
+        const ev = j && j.event;
+        if (ev === 'turn.phase.started') workLive.turnOpen = true;
+        else if (ev === 'turn.phase.completed' || ev === 'turn.failed') workLive.turnOpen = false;
+        else if (ev === 'model.request.started') workLive.phase = { code: 'think', since: ts };
+        else if (ev === 'tool.call.started') {
+          const m = /"toolName":"([^"]+)"/.exec(line);
+          workLive.phase = { code: 'tool', tool: m ? m[1] : '工具', since: ts };
         }
+        if (failed) lastFailTs = ts;
+      } catch (_) {
+        if (failed) lastFailTs = Date.now();
       }
     }
   } catch (_) {}
@@ -211,10 +229,10 @@ const act = { lastActivity: 0, waveUntil: 0, prevState: 'idle' };
 function decideState(now) {
   let s;
   if (now - lastFailTs < 60000) s = 'failed';
-  else if (now - act.lastActivity < 25000) s = 'running';
+  else if (workLive.turnOpen || now - act.lastActivity < 25000) s = 'running';   // 回合没关 = 一直在工作(思考/慢工具的空窗不挥手)
   else if (now < act.waveUntil) s = 'waving';
   else s = 'idle';
-  if (act.prevState === 'running' && s === 'idle') act.waveUntil = now + 6000;
+  if (act.prevState === 'running' && s === 'idle') act.waveUntil = now + 6000;   // 只有真完工才挥手
   act.prevState = s;
   return s;
 }
@@ -309,7 +327,7 @@ async function tickOnce() {
       const tr = conn.prepare('SELECT tool_name, started_at FROM tool_usage ORDER BY started_at DESC LIMIT 1').get();
       if (tr && tr.started_at > lastToolTs) {
         lastToolTs = tr.started_at;
-        if (state === 'running' && now - lastToolReactAt > 8000 && now >= celebrateUntil && !(ovr && ovr.until > now)) {
+        if (state === 'running' && !(workLive.turnOpen && workLive.phase) && now - lastToolReactAt > 8000 && now >= celebrateUntil && !(ovr && ovr.until > now)) {
           const TOOL_SAY = { Read: '翻找中…', Grep: '搜索中…', Glob: '翻找中…', Bash: '敲敲敲…', Edit: '改改改…', Write: '奋笔疾书…', WebFetch: '上网查查…', WebSearch: '上网查查…', TodoWrite: '列个清单…', Task: '派小弟干活…' };
           ovr = { text: '🔧 ' + (TOOL_SAY[tr.tool_name] || '忙忙忙…'), until: now + 2200 };
           lastToolReactAt = now;
@@ -365,6 +383,19 @@ async function tickOnce() {
     pom, night: night ? 1 : 0, feedTick, pack: clickPack,
     checkin: { done: slot.checkinDate === dateStr(new Date()) ? 1 : 0, streak: slot.streak || 0 },
   };
+  // 实时工作框(三行):回合开着时默认显示;emoji 随阶段变(思考/查资料/跑命令/改代码…)
+  // 点击回应/喂食/番茄钟到点等 override 期间由页面隐藏它,结束自动回来
+  ext.work = (function () {
+    if (state !== 'running' || !workLive.turnOpen || !workLive.phase) return null;
+    const p = workLive.phase;
+    const el = Math.max(0, Math.round((now - p.since) / 1000));
+    const elTxt = el >= 60 ? Math.floor(el / 60) + ' 分 ' + Math.round(el % 60) + ' 秒' : el + ' 秒';
+    const T = { Bash: '⚙️ 跑命令', Read: '📖 查阅中', Grep: '📖 查阅中', Glob: '📖 查阅中', LS: '📖 查阅中',
+      Edit: '✍️ 改代码', Write: '✍️ 写文件', MultiEdit: '✍️ 改代码', NotebookEdit: '✍️ 改代码',
+      WebSearch: '🔍 查资料', WebFetch: '🔍 查资料', TodoWrite: '📝 记计划', TaskOutput: '⏳ 等任务', Task: '🤝 派活' };
+    if (p.code === 'tool') return { l1: '💼 工作中', l2: T[p.tool] || '🔧 用工具', l3: p.tool + ' · ' + elTxt };
+    return { l1: '💼 工作中', l2: '🤔 思考中', l3: (stats && stats.modelId ? stats.modelId : '模型') + ' · 想了 ' + elTxt };
+  })();
 
   const st = stats || { turn: '', cost: '', sum: '', sumCost: '', providerId: '', modelId: '' };
   resolveApi(st.providerId, st.modelId);          // 当前会话实际在用的 provider/模型
