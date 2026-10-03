@@ -1,5 +1,7 @@
 'use strict';
 // usage.js — ZCode 用量库(db.sqlite)统计 + rollout 兜底 + 面板「见过的 provider」(拆分自 pet-chip.js)
+const fs = require('fs');
+const path = require('path');
 const P = require('./pricing');
 const B = require('./balance');
 // 「匹配」不用用户自己去找:脚本把用量库里出现过的 provider_id 全列出来(带次数/最新模型/已知的余额与单价),
