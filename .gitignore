@@ -1,0 +1,19 @@
+# 运行期数据与个人配置(绝不入库)
+pet-state.json
+pet-providers.json
+pets.json
+.pet-manifest.json
+mcp-bootstrap.log
+.tick-err.txt
+.inj-err.txt
+.rej-err.txt
+.uncaught-err.txt
+.pet-preview/
+pet-preview.png
+
+# 宠物素材(精灵图来自 Petdex,版权归各自作者;用 scripts/pet-add.js 下载)
+pet-*/
+
+# Node
+node_modules/
+*.log

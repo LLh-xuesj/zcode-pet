@@ -1,0 +1,17 @@
+{
+  "comment": "这是 pets.json 的示例。复制为 pets.json 后守护会在启动时读取;精灵图请用 scripts/pet-add.js 下载(Petdex),或自己按下面的格式放置。",
+  "pets": [
+    {
+      "slug": "wangcai",
+      "name": "旺财",
+      "sprite": "file:///C:/path/to/data/pet-wangcai/sprite.webp",
+      "rows": 9
+    },
+    {
+      "slug": "boba",
+      "name": "Boba 小水獭",
+      "sprite": "file:///C:/path/to/data/pet-boba/sprite.webp",
+      "rows": 11
+    }
+  ]
+}
