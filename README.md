@@ -39,7 +39,7 @@ Node ≥ 22（`node -v` 确认；Windows 自带的 `node:sqlite` 需要它）。
 - **从 GitHub 装**：插件市场 → 添加 → 添加插件市场 → 粘贴本仓库地址（`https://github.com/<you>/zcode-pet`）→ 在个人市场里找到「桌宠」→ 安装。
 - **从本地目录装**：克隆仓库后，添加插件市场时粘贴仓库文件夹路径即可。
 
-装好后：ZCode 每次启动会自动通过插件的 MCP 入口拉起守护进程（幂等，不会双开），数据目录在 `~/.zcode/cli/plugins/data/zcode-pet/`。
+装好后：ZCode 每次启动会自动通过插件的 MCP 入口拉起守护进程（幂等，不会双开），数据目录在 `~/.zcode/cli/plugins/data/<市场名>-后缀目录`（安装时自动决定，右键菜单/工具里看得到）。
 
 ### 1b. 不装插件、直接跑
 
