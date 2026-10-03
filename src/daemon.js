@@ -14,6 +14,7 @@ const PG = require('./page');
 const DATA_DIR = C.DATA_DIR;
 const PETS = C.PETS, POLL_MS = C.POLL_MS, CDP_PORT = C.CDP_PORT, LOCK_PORT = C.LOCK_PORT,
       BAL_INTERVAL = C.BAL_INTERVAL, LOW_BALANCE = C.LOW_BALANCE, SAT_DECAY_MS = C.SAT_DECAY_MS, dateStr = C.dateStr;
+const LEVELS = PS.LEVELS, ZLOG_DIR = C.ZLOG_DIR;
 const petSlot = PS.petSlot, savePetState = PS.savePetState, petState = PS.petStateRef(),
       ACH_DEFS = PS.ACH_DEFS, levelOf = PS.levelOf, titleOf = PS.titleOf,
       gainFromTokens = PS.gainFromTokens, FEED_COOLDOWN = PS.FEED_COOLDOWN, MANUAL_FEED = PS.MANUAL_FEED;
@@ -426,7 +427,7 @@ async function tickOnce() {
     hasKey: curApi.key ? 1 : 0, billed: curApi.billed ? 1 : 0, peak: peak === null ? -1 : (peak ? 1 : 0),
     list: apiList(),
     seen: seenProviders(),
-    auto: Object.keys(apiKeys).filter((k) => !defFor(k, '')),
+    auto: P.apiKeyIds().filter((k) => !defFor(k, '')),
     // 本会话按家拆账(菜单「💸 本会话」行;stats 为空/还没算出来时留空)
     provTxt: (stats && stats.provTxt) || '',
     // ZCode 自己那份套餐额度(给账号型订阅用;顺便便于排查有没有读到)
@@ -611,7 +612,7 @@ function injectNow(){
 setInterval(fastPoll,250);
 loadCustomDefs();
 readProvider();
-function tickSafe(){tickOnce().catch((e)=>{try{fs.writeFileSync(path.join(__dirname,".tick-err.txt"),new Date().toISOString()+" "+((e&&(e.stack||e.message))||e))}catch(_){ }});}
+function tickSafe(){tickOnce().catch((e)=>{try{fs.writeFileSync(path.join(DATA_DIR,".tick-err.txt"),new Date().toISOString()+" "+((e&&(e.stack||e.message))||e))}catch(_){ }});}
 setInterval(tickSafe, POLL_MS);
 tickSafe();
 setInterval(queryBalance, BAL_INTERVAL);
