@@ -187,7 +187,7 @@ var FR=${FRAMES_JSON};
 var PETS=${PETS_JSON};
 var SLUG=null;try{SLUG=localStorage.getItem('tokPetSlug')}catch(_){ }
 var PET=PETS.find(function(p){return p.slug===SLUG})||PETS[0];
-var VER='48';   // 页面模板版本:改了页面代码必须 +1。守卫与创建共用同一常量,避免两边写岔(曾因此不重建)
+var VER='49';   // 页面模板版本:改了页面代码必须 +1。守卫与创建共用同一常量,避免两边写岔(曾因此不重建)
 var d=document.getElementById('tok-pet');
 if(d&&d.dataset.v!==VER){d.remove();d=null;}
 if(!d){
@@ -577,8 +577,10 @@ if(d._bubble){
   // 优先级:戳晕彩蛋 > 比 override 更新的点击回应 > override(工具反应/番茄钟到/喂食等) > 无
   var ovTxt=(d._instant&&d._instant.pri==='egg'&&iOK)?d._instant.text:(iOK&&(!(OVR&&OVR.until>now3)||(d._ovrAt||0)<=(d._instant.at||0))?d._instant.text:((OVR&&OVR.until>now3)?OVR.text:''));
   var slots=[d._bubble._p1,d._bubble._p2,d._bubble._p3];
-  if(ovTxt){slots.forEach(function(sl){sl.style.display='none'});d._bubble._p4.style.display='none';d._bubble._work.style.display='none';d._bubble._ov.textContent=ovTxt;d._bubble._ov.style.display='block';d._bubble._satRow.style.display='none';}else{d._bubble._ov.style.display='none';
-  if(WK){d._bubble._work.style.display='flex';d._bubble._w1.textContent=WK.l1;d._bubble._w2.textContent=WK.l2;d._bubble._w3.textContent=WK.l3;}else d._bubble._work.style.display='none';
+  // 对话框三种默认态互斥:点击回应(临时) > 实时工作框(工作中) > token 统计(空闲)
+  if(ovTxt){slots.forEach(function(sl){sl.style.display='none'});d._bubble._p4.style.display='none';d._bubble._work.style.display='none';d._bubble._ov.textContent=ovTxt;d._bubble._ov.style.display='block';d._bubble._satRow.style.display='none';}
+  else if(WK){d._bubble._ov.style.display='none';d._bubble._work.style.display='flex';d._bubble._w1.textContent=WK.l1;d._bubble._w2.textContent=WK.l2;d._bubble._w3.textContent=WK.l3;slots.forEach(function(sl){sl.style.display='none'});d._bubble._p4.style.display='none';d._bubble._satRow.style.display='none';}
+  else{d._bubble._ov.style.display='none';d._bubble._work.style.display='none';
   for(var pi=0;pi<3;pi++){
     var bd=BADGES[pi];
     if(bd){var cf=CLS[bd.c]||CLS.turn;
