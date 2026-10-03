@@ -154,7 +154,7 @@ function dropFood(dd){
     })(i);
   }
 }
-// 空闲散步:掷骰走一段,歇几秒再原路遛回出发点(用户中途拖过就尊重新位置,不回家)
+// 空闲散步:掷骰走一段就走完(回家的活交给回家看门狗 walkHome,见创建分支)
 function startWalk(dd){
   if(dd._walking)return;
   var w=dd.offsetWidth||100;
@@ -163,38 +163,12 @@ function startWalk(dd){
   var target=Math.max(8,Math.min(cur0+dir*(60+Math.random()*180),innerWidth-w-8));
   if(Math.abs(target-cur0)<30)return;
   dd._walking=true;
-  var home=cur0;
   if(window.__tokPetSet)window.__tokPetSet(dir>0?'running-right':'running-left');
   (function stepWalk(){
     if(!dd._walking||!dd.isConnected||dd._drag){dd._walking=false;return;}
     var c2=parseFloat(dd.style.left);
     var dl=target-c2;
-    if(Math.abs(dl)<3){
-      // 到达:原地歇 8-18 秒(期间 _walking 保持 true,免得 walkLoop 又叠一段新的),然后遛回去。
-      // 干活(state=running)也要回家——只有「被拖动过」才放弃;没到时机就每 5 秒重试。
-      if(window.__tokPetSet)window.__tokPetSet('idle');
-      (function tryBack(){
-        setTimeout(function(){
-          try{
-            var c3=parseFloat(dd.style.left);
-            var moved=isNaN(c3)||Math.abs(c3-target)>4;   // 被拖拽/外力挪过
-            if(!dd.isConnected||moved){dd._walking=false;return;}
-            if(dd._drag||dd._night){tryBack();return;}   // 夜里/拖拽中:等下一轮(_walking 是 rest 锁,不能当跳过条件)
-            dd._walking=true;
-            if(window.__tokPetSet)window.__tokPetSet(home>c3?'running-right':'running-left');
-            (function stepBack(){
-              if(!dd._walking||!dd.isConnected||dd._drag){dd._walking=false;return;}
-              var c4=parseFloat(dd.style.left);
-              var dl2=home-c4;
-              if(Math.abs(dl2)<3){dd._walking=false;return;}
-              dd.style.left=(c4+(dl2>0?2:-2))+'px';
-              setTimeout(stepBack,24);
-            })();
-          }catch(_){dd._walking=false;}
-        },5000);
-      })();
-      return;
-    }
+    if(Math.abs(dl)<3){dd._walking=false;return;}
     dd.style.left=(c2+(dl>0?2:-2))+'px';
     setTimeout(stepWalk,24);
   })();
@@ -204,7 +178,7 @@ var FR=${FRAMES_JSON};
 var PETS=${PETS_JSON};
 var SLUG=null;try{SLUG=localStorage.getItem('tokPetSlug')}catch(_){ }
 var PET=PETS.find(function(p){return p.slug===SLUG})||PETS[0];
-var VER='44';   // 页面模板版本:改了页面代码必须 +1。守卫与创建共用同一常量,避免两边写岔(曾因此不重建)
+var VER='46';   // 页面模板版本:改了页面代码必须 +1。守卫与创建共用同一常量,避免两边写岔(曾因此不重建)
 var d=document.getElementById('tok-pet');
 if(d&&d.dataset.v!==VER){d.remove();d=null;}
 if(!d){
@@ -220,6 +194,8 @@ if(!d){
   var b=${bubbleHtml()};
   d.appendChild(b);d._bubble=b;
   (document.body||document.documentElement).appendChild(d);
+  // 家的锚点:必须在 appendChild 之后取 rect(游离元素 rect 恒为 0,曾把锚点变成左边缘、宠物被看门狗拽走)
+  d._homeX=(function(){var r=d.getBoundingClientRect();return isFinite(r.left)?r.left:null;})();
   // 拖拽:左右方向跑步;位移过小视为点击(摸头跳跃)
   var dragMoved=false;
   d.addEventListener('mousedown',function(ev){
@@ -262,6 +238,7 @@ if(!d){
         }
       }
       var rc=d.getBoundingClientRect();
+      d._homeX=rc.left;   // 拖到哪,哪就是新家
       try{localStorage.setItem('tokPetPos',JSON.stringify({x:Math.round(rc.left),y:Math.round(rc.top)}))}catch(_){ }
     }
     document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);
@@ -297,6 +274,29 @@ if(!d){
       walkLoop();
     },20000+Math.random()*25000);
   })();
+  // 回家看门狗:每 5 秒检查,离「家」(锚点=默认位置/最近一次拖拽落点)超过 40px 就自己走回去。
+  // 干活(state=running)也回;只有被拖拽中、睡觉、窗口隐藏时不走。锚点在拖拽结束处更新。
+  var walkHome=function(){
+    try{
+      if(!d.isConnected||d._walking||d._drag||d._night||d._homeX==null)return;
+      if(document.visibilityState==='hidden')return;
+      var c=parseFloat(d.style.left);
+      if(!isFinite(c)||Math.abs(c-d._homeX)<=40)return;
+      var w2=d.offsetWidth||105;
+      var tx=Math.max(8,Math.min(d._homeX,innerWidth-w2-8));   // 锚点可能因窗口缩放跑到视口外,夹回来
+      d._walking=true;
+      if(window.__tokPetSet)window.__tokPetSet(tx>c?'running-right':'running-left');
+      (function st(){
+        if(!d.isConnected||!d._walking||d._drag||d._night){d._walking=false;return;}
+        var c2=parseFloat(d.style.left);
+        var dl=tx-c2;
+        if(Math.abs(dl)<3){d._walking=false;return;}
+        d.style.left=(c2+(dl>0?2:-2))+'px';
+        setTimeout(st,24);
+      })();
+    }catch(_){ }
+  };
+  setInterval(walkHome,5000);
 }else{
   var sv2=null;try{sv2=parseFloat(localStorage.getItem('tokPetScale'))}catch(_){ }
   if(sv2){d.dataset.s=String(sv2);d.style.width=(192*sv2)+'px';d.style.height=(208*sv2)+'px';d.style.backgroundSize=(8*192*sv2)+'px '+(PET.rows*208*sv2)+'px';}
