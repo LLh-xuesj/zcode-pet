@@ -154,7 +154,7 @@ function dropFood(dd){
     })(i);
   }
 }
-// 空闲散步
+// 空闲散步:掷骰走一段,歇几秒再原路遛回出发点(用户中途拖过就尊重新位置,不回家)
 function startWalk(dd){
   if(dd._walking)return;
   var w=dd.offsetWidth||100;
@@ -163,12 +163,38 @@ function startWalk(dd){
   var target=Math.max(8,Math.min(cur0+dir*(60+Math.random()*180),innerWidth-w-8));
   if(Math.abs(target-cur0)<30)return;
   dd._walking=true;
+  var home=cur0;
   if(window.__tokPetSet)window.__tokPetSet(dir>0?'running-right':'running-left');
   (function stepWalk(){
-    if(!dd._walking||!dd.isConnected){dd._walking=false;return;}
+    if(!dd._walking||!dd.isConnected||dd._drag){dd._walking=false;return;}
     var c2=parseFloat(dd.style.left);
     var dl=target-c2;
-    if(Math.abs(dl)<3){dd._walking=false;return;}
+    if(Math.abs(dl)<3){
+      // 到达:原地歇 8-18 秒(期间 _walking 保持 true,免得 walkLoop 又叠一段新的),然后遛回去。
+      // 干活(state=running)也要回家——只有「被拖动过」才放弃;没到时机就每 5 秒重试。
+      if(window.__tokPetSet)window.__tokPetSet('idle');
+      (function tryBack(){
+        setTimeout(function(){
+          try{
+            var c3=parseFloat(dd.style.left);
+            var moved=isNaN(c3)||Math.abs(c3-target)>4;   // 被拖拽/外力挪过
+            if(!dd.isConnected||moved){dd._walking=false;return;}
+            if(dd._drag||dd._night){tryBack();return;}   // 夜里/拖拽中:等下一轮(_walking 是 rest 锁,不能当跳过条件)
+            dd._walking=true;
+            if(window.__tokPetSet)window.__tokPetSet(home>c3?'running-right':'running-left');
+            (function stepBack(){
+              if(!dd._walking||!dd.isConnected||dd._drag){dd._walking=false;return;}
+              var c4=parseFloat(dd.style.left);
+              var dl2=home-c4;
+              if(Math.abs(dl2)<3){dd._walking=false;return;}
+              dd.style.left=(c4+(dl2>0?2:-2))+'px';
+              setTimeout(stepBack,24);
+            })();
+          }catch(_){dd._walking=false;}
+        },5000);
+      })();
+      return;
+    }
     dd.style.left=(c2+(dl>0?2:-2))+'px';
     setTimeout(stepWalk,24);
   })();
@@ -178,7 +204,7 @@ var FR=${FRAMES_JSON};
 var PETS=${PETS_JSON};
 var SLUG=null;try{SLUG=localStorage.getItem('tokPetSlug')}catch(_){ }
 var PET=PETS.find(function(p){return p.slug===SLUG})||PETS[0];
-var VER='43';   // 页面模板版本:改了页面代码必须 +1。守卫与创建共用同一常量,避免两边写岔(曾因此不重建)
+var VER='44';   // 页面模板版本:改了页面代码必须 +1。守卫与创建共用同一常量,避免两边写岔(曾因此不重建)
 var d=document.getElementById('tok-pet');
 if(d&&d.dataset.v!==VER){d.remove();d=null;}
 if(!d){
