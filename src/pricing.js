@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const C = require('./config');
+const { PCFG } = C;   // readProvider 读 ZCode 的 provider_config.json
 // ---------- 多 provider 定价 ----------
 // 每个 provider 一份定义:{label 大名(气泡上显示), match 匹配词(在 provider_id+model_id 里找子串),
 // balanceUrl 余额接口, balancePath 金额字段路径(可空,空则自动在返回里找), price 计价(¥/百万 tokens),

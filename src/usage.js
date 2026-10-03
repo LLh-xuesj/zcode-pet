@@ -2,8 +2,12 @@
 // usage.js — ZCode 用量库(db.sqlite)统计 + rollout 兜底 + 面板「见过的 provider」(拆分自 pet-chip.js)
 const fs = require('fs');
 const path = require('path');
+const C = require('./config');
 const P = require('./pricing');
 const B = require('./balance');
+const { ROLLOUT, DB_PATH } = C;   // newestRollout / db 用
+const { defFor, priceFor, costOf, curOf, fmtCost, bigName } = P;   // 逐行计价与大名
+const { balInfoFor } = B;          // 面板「见过的 provider」用
 // 「匹配」不用用户自己去找:脚本把用量库里出现过的 provider_id 全列出来(带次数/最新模型/已知的余额与单价),
 // 面板上点一下就填好。30 秒缓存,顺便省掉面板每次打开都查库。
 let seenCache = null, seenAt = 0;
@@ -32,12 +36,12 @@ function seenProviders() {
           url: (def && def.balanceUrl) || (bi && bi.url) || '', path: (def && def.balancePath) || (bi && bi.path) || '',
           quota: (bi && bi.quota) ? 1 : 0, nb: (bi && bi.noBal) ? 1 : 0,
           hit: price ? fmt(price.hit) : '', miss: price ? fmt(price.miss) : '', out: price ? fmt(price.out) : '',
-          zcode: apiKeys[r.provider_id] ? 1 : 0,
+          zcode: P.getApiKey(r.provider_id) ? 1 : 0,
         };
       });
       // 在 ZCode 里配了 key、但还没真正用过的 provider 也列上(用户刚配完就来加单价,这时用量库里还没有它)
       const have = new Set(out.map((x) => x.p));
-      for (const k of Object.keys(apiKeys)) {
+      for (const k of P.apiKeyIds()) {
         if (have.has(k)) continue;
         const def = defFor(k, '');
         const price = (def && priceFor(def, '')) || null;
