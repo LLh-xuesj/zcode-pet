@@ -185,8 +185,102 @@ function todayLog() {
 let logOffset = 0;
 let lastFailTs = 0;
 // 实时工作信号:来自 ZCode 自己的日志事件流(turn.phase/model.request/tool.call 的 started/completed)
-// turnOpen=true 表示当前用户回合还没结束 —— 中间再长的空窗(模型思考/慢工具)也算工作中,气泡不会中途挥手
-const workLive = { turnOpen: false, phase: null };   // phase={code:'think'|'tool', tool, since}
+// 日志每行都带 sessionId,所以**按会话各记一份**:桌宠只有一个身体,但可以有多个会话同时在跑。
+// 只维护一个全局回合开关时,任一会话做完都会把别的会话正在跑的回合一起关掉
+//(症状:两个任务并行,先完成的那个一结束,实时工作气泡就消失、退回旧的"敲敲敲"工具反应)。
+// open=true 表示该会话的用户回合还没结束 —— 中间再长的空窗(模型思考/慢工具)也算工作中,气泡不会中途挥手。
+const turns = new Map();              // sessionId -> {open, phase:{code:'think'|'tool',tool,since}, lastAt}
+const TURN_STALE_MS = 180000;         // 该会话最后一条事件超过 3 分钟没动过,就当回合已悄悄结束(一天有 ~8 个崩在半路的僵尸回合,不兜住宠物会永久"工作中")
+const TURN_KEEP_MS = 30 * 60 * 1000;  // 会话记录最多留 30 分钟,防 Map 无限长
+let displaySess = null;               // 当前展示的会话:用户最近一次"发起回合"的那个
+function turnOf(sid) {
+  let t = turns.get(sid);
+  if (!t) { t = { open: false, phase: null, since: 0, lastAt: 0, model: '' }; turns.set(sid, t); }
+  return t;
+}
+// 正在干活的会话(回合开着且刚动过);多个同时忙就取最近动过的那个 —— 宠物只有一个,展示最忙的那个
+function busyTurn(now) {
+  let best = null, bestSid = null;
+  for (const [sid, t] of turns) {
+    if (!t.open || now - t.lastAt > TURN_STALE_MS) continue;
+    if (!best || t.lastAt > best.lastAt) { best = t; bestSid = sid; }
+  }
+  return best ? { sid: bestSid, t: best } : null;
+}
+function busyCount(now) {
+  let n = 0;
+  for (const t of turns.values()) if (t.open && now - t.lastAt <= TURN_STALE_MS) n++;
+  return n;
+}
+// 同时在忙的会话清单(给实时工作框一段一段地显示)。子代理会话不单列 ——
+// 它是被某个会话用 Task 工具派出去的,活儿本来就该算在派它的那个会话名下,
+// 单列会让一个任务在气泡上出现两段(父"🤝 派活" + 子"跑命令")。
+function busyList(now) {
+  const out = [];
+  for (const [sid, t] of turns) {
+    if (!t.open || now - t.lastAt > TURN_STALE_MS) continue;
+    if (/^sess_subagent/.test(sid)) continue;
+    const m = sessionMeta(sid);
+    if (m.taskType && m.taskType !== 'interactive') continue;
+    out.push({ sid, t, title: m.title });
+  }
+  // 先开的排上面:顺序不随时间跳,免得两段来回换位
+  out.sort((a, b) => ((a.t.since || a.t.lastAt) - (b.t.since || b.t.lastAt)) || (a.sid < b.sid ? -1 : 1));
+  return out;
+}
+const WORK_T = { Bash: '⚙️ 跑命令', Read: '📖 查阅中', Grep: '📖 查阅中', Glob: '📖 查阅中', LS: '📖 查阅中',
+  Edit: '✍️ 改代码', Write: '✍️ 写文件', MultiEdit: '✍️ 改代码', NotebookEdit: '✍️ 改代码',
+  WebSearch: '🔍 查资料', WebFetch: '🔍 查资料', TodoWrite: '📝 记计划', TaskOutput: '⏳ 等任务', Task: '🤝 派活' };
+// 某个会话此刻"在干什么":阶段行 + 详情行(工具/模型 · 已耗时)
+function workLine(t, now) {
+  const p = t.phase;
+  const el = Math.max(0, Math.round((now - (p ? p.since : t.since || t.lastAt)) / 1000));
+  const elTxt = el >= 60 ? Math.floor(el / 60) + ' 分 ' + Math.round(el % 60) + ' 秒' : el + ' 秒';
+  if (p && p.code === 'tool') return { l2: WORK_T[p.tool] || '🔧 用工具', l3: p.tool + ' · ' + elTxt };
+  if (p) return { l2: '🤔 思考中', l3: (t.model || (stats && stats.modelId) || '模型') + ' · 想了 ' + elTxt };
+  return { l2: '⚡ 开工了', l3: '等模型先说话 · ' + elTxt };   // 回合刚开、还没进入具体阶段
+}
+// 会话标题(工作框里那一段叫什么)取自 ZCode 自己的库 session.title ——
+// 只读查询 + 60 秒缓存(标题会被用户改,缓存别太久;拿不到就退回短 id)。
+const sessMeta = new Map();           // sid -> {title, taskType, at}
+const SESS_META_TTL = 60000;
+function sessionMeta(sid) {
+  const c = sessMeta.get(sid);
+  const now = Date.now();
+  if (c && now - c.at < SESS_META_TTL) return c;
+  let rec = { title: '', taskType: '', at: now };
+  try {
+    const conn = U.db();
+    if (conn) {
+      const r = conn.prepare('SELECT title, task_type FROM session WHERE id = ?').get(sid);
+      if (r) rec = { title: String(r.title || ''), taskType: String(r.task_type || ''), at: now };
+    }
+  } catch (_) {}
+  if (sessMeta.size > 200) sessMeta.clear();
+  sessMeta.set(sid, rec);
+  return rec;
+}
+// 会话名太长就截断(气泡最宽 300px,名字行 10px 字,16 个字够用)
+function clipName(s) { s = String(s || '').trim().replace(/\s+/g, ' '); return s.length > 16 ? s.slice(0, 16) + '…' : s; }
+function shortSid(sid) { const m = /^sess_(.{6})/.exec(sid); return m ? m[1] : sid.slice(0, 6); }
+
+function sweepTurns(now) {
+  // 不管回合开没开,只要这么久没再动过就丢。光判 !t.open 是不够的:
+  // 崩在半路的回合(有 started、永远等不到 completed)本身就是 open=true,
+  // 只清已关闭的记录等于把最该清的那种僵尸留下来,Map 会一天涨几条。
+  for (const [sid, t] of turns) if (now - t.lastAt > TURN_KEEP_MS) turns.delete(sid);
+}
+// 统计口径的"当前会话":优先用户最近发起回合的那个。按最新 rollout 的写入时间来挑是不行的
+// —— 两个会话交替写,谁最后写谁就被当成"当前会话",气泡里的 token 数字会来回跳。
+function currentSessionId(now) {
+  const b = busyTurn(now);
+  if (b && busyCount(now) === 1) return b.sid;   // 只有一个会话在跑,那它就是用户在等的那只
+  if (displaySess && turns.has(displaySess)) {
+    const t = turns.get(displaySess);
+    if (now - t.lastAt < TURN_KEEP_MS) return displaySess;
+  }
+  return b ? b.sid : null;
+}
 function scanLogForFailures() {
   try {
     const f = todayLog();
@@ -202,34 +296,50 @@ function scanLogForFailures() {
     for (const line of text.split('\n')) {
       if (line.indexOf('"event":') < 0) continue;
       const failed = line.includes('"turn.failed"');
-      const isEvt = failed || line.indexOf('"turn.phase.') >= 0 || line.indexOf('"model.request.started"') >= 0 || line.indexOf('"tool.call.started"') >= 0;
+      const isEvt = failed || line.indexOf('"turn.phase.') >= 0 || line.indexOf('"model.request.started"') >= 0
+        || line.indexOf('"tool.call.started"') >= 0 || line.indexOf('"turn.completed"') >= 0 || line.indexOf('"turn.started"') >= 0;
       if (!isEvt) continue;
       let ts = Date.now();
       try {
         const j = JSON.parse(line);
         if (j && j.timestamp) { const p = Date.parse(j.timestamp); if (isFinite(p)) ts = p; }
         const ev = j && j.event;
-        if (ev === 'turn.phase.started') workLive.turnOpen = true;
-        else if (ev === 'turn.phase.completed' || ev === 'turn.failed') workLive.turnOpen = false;
-        else if (ev === 'model.request.started') workLive.phase = { code: 'think', since: ts };
+        const sm = /"sessionId":"([^"]+)"/.exec(line);
+        const sid = (sm && sm[1]) || (j && j.sessionId) || '(未知会话)';
+        const t = turnOf(sid);
+        t.lastAt = ts;
+        const mm = /"modelId":"([^"]+)"/.exec(line);   // 工具调用行里带 providerId/modelId,顺手记下这个会话在用什么模型
+        if (mm) t.model = mm[1];
+        if (ev === 'turn.phase.started' || ev === 'turn.started') {
+          if (!t.open) { t.phase = null; t.since = ts; }   // 新回合:清掉上一回合残留的阶段
+          t.open = true;
+          displaySess = sid;                               // 用户刚在这个会话发起回合 ⇒ 它就是"当前会话"
+        } else if (ev === 'turn.completed') t.open = false;
+        else if (ev === 'turn.failed') { t.open = false; t.phase = null; }
+        // turn.phase.completed 不关回合:一个 turn 有多个 phase(首个是 context_initialization)。
+        // 老写法拿它当"回合结束",才不得不靠 act.lastActivity 的 25 秒兜底,
+        // 也正因为它是全局的,别的会话一完工就把这个会话的回合一起关了(bug 来源)
+        else if (ev === 'turn.phase.completed') { /* 阶段收尾,回合继续 */ }
+        else if (ev === 'model.request.started') t.phase = { code: 'think', since: ts };
         else if (ev === 'tool.call.started') {
           const m = /"toolName":"([^"]+)"/.exec(line);
-          workLive.phase = { code: 'tool', tool: m ? m[1] : '工具', since: ts };
+          t.phase = { code: 'tool', tool: m ? m[1] : '工具', since: ts };
         }
         if (failed) lastFailTs = ts;
       } catch (_) {
         if (failed) lastFailTs = Date.now();
       }
     }
+    sweepTurns(Date.now());
   } catch (_) {}
 }
 
 // ---------- 状态机 ----------
 const act = { lastActivity: 0, waveUntil: 0, prevState: 'idle' };
-function decideState(now) {
+function decideState(now, busy) {
   let s;
   if (now - lastFailTs < 60000) s = 'failed';
-  else if (workLive.turnOpen || now - act.lastActivity < 25000) s = 'running';   // 回合没关 = 一直在工作(思考/慢工具的空窗不挥手)
+  else if (busy || now - act.lastActivity < 25000) s = 'running';   // 任一会话回合没关 = 一直在工作(思考/慢工具的空窗不挥手)
   else if (now < act.waveUntil) s = 'waving';
   else s = 'idle';
   if (act.prevState === 'running' && s === 'idle') act.waveUntil = now + 6000;   // 只有真完工才挥手
@@ -283,7 +393,9 @@ async function tickOnce() {
   if (now - statsAt > 30000) due = true;          // 心跳:兜住库写入滞后
   if (due) {
     statsAt = now; settleAt = 0;
-    const s = dbStats(sessionIdOf(file)) || (file ? turnStats(file) : null);
+    // 统计跟着"当前会话"走,不再跟着最新写入的 rollout 文件走(否则并发时会话会来回翻)
+    const vid = currentSessionId(now);
+    const s = (vid && dbStats(vid)) || dbStats(sessionIdOf(file)) || (file ? turnStats(file) : null);
     if (s) stats = s;
     feedFromDb(curSlug);                          // 养成:跨会话投喂新完成的一轮
     // 一次性迁移:轮数成就回填全部历史(与成长值"历史不亏"口径一致)
@@ -309,7 +421,8 @@ async function tickOnce() {
     savePetState();
   }
   scanLogForFailures();
-  let state = decideState(now);
+  const busy = busyTurn(now);                     // 正在干活的会话(任意一个),null = 全闲
+  let state = decideState(now, busy);
   if (now < celebrateUntil) state = 'jumping';    // 升级/喂食庆祝优先
   else if (slot.sat < 15 && state === 'idle') state = 'waiting'; // 饿了讨食
   // 气泡进度条改用「等级进度」:饱食度已经在文字里写了百分比(🍖63%),条再重复一遍没意义
@@ -327,7 +440,9 @@ async function tickOnce() {
       const tr = conn.prepare('SELECT tool_name, started_at FROM tool_usage ORDER BY started_at DESC LIMIT 1').get();
       if (tr && tr.started_at > lastToolTs) {
         lastToolTs = tr.started_at;
-        if (state === 'running' && !(workLive.turnOpen && workLive.phase) && now - lastToolReactAt > 8000 && now >= celebrateUntil && !(ovr && ovr.until > now)) {
+        // 只在"没有任何会话在实时工作时"才冒工具台词:否则会和实时工作框打架
+        //(气泡被 ovr 顶掉 → 页面跳过动画还原 → 跑步停下重跑 + 冒出老的"敲敲敲"界面)
+        if (state === 'running' && !busy && now - lastToolReactAt > 8000 && now >= celebrateUntil && !(ovr && ovr.until > now)) {
           const TOOL_SAY = { Read: '翻找中…', Grep: '搜索中…', Glob: '翻找中…', Bash: '敲敲敲…', Edit: '改改改…', Write: '奋笔疾书…', WebFetch: '上网查查…', WebSearch: '上网查查…', TodoWrite: '列个清单…', Task: '派小弟干活…' };
           ovr = { text: '🔧 ' + (TOOL_SAY[tr.tool_name] || '忙忙忙…'), until: now + 2200 };
           lastToolReactAt = now;
@@ -383,18 +498,26 @@ async function tickOnce() {
     pom, night: night ? 1 : 0, feedTick, pack: clickPack,
     checkin: { done: slot.checkinDate === dateStr(new Date()) ? 1 : 0, streak: slot.streak || 0 },
   };
-  // 实时工作框(三行):回合开着时默认显示;emoji 随阶段变(思考/查资料/跑命令/改代码…)
-  // 点击回应/喂食/番茄钟到点等 override 期间由页面隐藏它,结束自动回来
+  // 实时工作框:一个会话在跑就是老样子(阶段行 + 详情行);多个会话同时在跑时一段一段列出来,
+  // 段与段之间由页面画虚线分隔,谁完工谁那一段自己消失。
+  // 点击回应/喂食/番茄钟到点等 override 期间由页面隐藏它,结束自动回来。
+  // 关键点:判据是"任意会话在忙"(busy),不是"这一个全局回合开关"——
+  // 否则两个任务并行时,先完成的那一个会把另一个正在跑的回合一起关掉,气泡当场消失。
   ext.work = (function () {
-    if (state !== 'running' || !workLive.turnOpen || !workLive.phase) return null;
-    const p = workLive.phase;
-    const el = Math.max(0, Math.round((now - p.since) / 1000));
-    const elTxt = el >= 60 ? Math.floor(el / 60) + ' 分 ' + Math.round(el % 60) + ' 秒' : el + ' 秒';
-    const T = { Bash: '⚙️ 跑命令', Read: '📖 查阅中', Grep: '📖 查阅中', Glob: '📖 查阅中', LS: '📖 查阅中',
-      Edit: '✍️ 改代码', Write: '✍️ 写文件', MultiEdit: '✍️ 改代码', NotebookEdit: '✍️ 改代码',
-      WebSearch: '🔍 查资料', WebFetch: '🔍 查资料', TodoWrite: '📝 记计划', TaskOutput: '⏳ 等任务', Task: '🤝 派活' };
-    if (p.code === 'tool') return { l1: '💼 工作中', l2: T[p.tool] || '🔧 用工具', l3: p.tool + ' · ' + elTxt };
-    return { l1: '💼 工作中', l2: '🤔 思考中', l3: (stats && stats.modelId ? stats.modelId : '模型') + ' · 想了 ' + elTxt };
+    if (state !== 'running') return null;
+    const list = busyList(now);
+    if (!list.length) return null;
+    const MAXW = 3;                                  // 最多列 3 段,再多折叠成"…还有 N 个会话"
+    const show = list.slice(0, MAXW);
+    const dup = {};                                  // 两条会话标题撞了就用短 id 区分开
+    for (const it of show) { const nm = it.title || ''; if (nm) dup[nm] = (dup[nm] || 0) + 1; }
+    const items = show.map((it) => {
+      const line = workLine(it.t, now);
+      let nm = clipName(it.title);
+      if (!nm || dup[it.title] > 1) nm = (nm ? nm + ' ' : '') + '#' + shortSid(it.sid);
+      return { k: it.sid, n: nm, l2: line.l2, l3: line.l3 };
+    });
+    return { items, more: list.length - show.length, multi: items.length > 1 };
   })();
 
   const st = stats || { turn: '', cost: '', sum: '', sumCost: '', providerId: '', modelId: '' };

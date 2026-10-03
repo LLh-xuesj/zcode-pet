@@ -67,17 +67,13 @@ function bubbleHtml() {
   // 当前模型(大名,如 DeepSeek / GLM(订阅));订阅套餐没有单价,只报名字
   var mdl=document.createElement('div');
   mdl.style.cssText='display:none;font-size:9px;color:#7a5a2e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-  // 实时工作框(两行):干活时默认显示;点击回应等 override 期间隐藏,结束自动回到这里
+  // 实时工作框(内容由外层 IIFE 的 renderWork 按"几个会话在跑"动态生成,一段一行、段间虚线)
   var wk=document.createElement('div');
   wk.style.cssText='display:none;width:100%;flex-direction:column;align-items:stretch;gap:0;margin-bottom:3px;';
-
-  var w2=document.createElement('span');w2.style.cssText='font-size:14px;font-weight:700;color:#4a3117;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-  var w3=document.createElement('span');w3.style.cssText='font-size:12px;color:#8a6a3e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-  wk.appendChild(w2);wk.appendChild(w3);
   satRow.appendChild(satLbl);satRow.appendChild(satBarRow);satRow.appendChild(mdl);
   b.appendChild(satRow);
   b.insertBefore(wk,satRow);   // 工作框排在饱食度行上面(satRow 必须先挂进 b,insertBefore 才合法)
-  b._work=wk;b._w2=w2;b._w3=w3;
+  b._work=wk;wk._key='';wk._rows=[];
   b._satRow=satRow;b._satLbl=satLbl;b._satBar=satBar;b._satFill=satFill;b._satCap=satCap;b._mdl=mdl;
   // 番茄钟胶囊(第 4 枚)
   b._p4=document.createElement('span');
@@ -89,6 +85,9 @@ function bubbleHtml() {
 
 function petJs(state, badges, balLine, lowBal, ovr, ext) {
   return `(function(){
+// 隐藏守卫:菜单里选了「隐藏」就撤掉元素,并且这一整个页面会话都不再重建它。
+// 页面重载(= 重启 ZCode / 重开窗口)后 window 清空,宠物自己回来 —— 这才是菜单承诺的"重启后恢复"。
+if(window.__tokPetHidden){var _hd=document.getElementById('tok-pet');if(_hd)_hd.remove();return;}
 var S=${JSON.stringify(state)};
 var BADGES=${JSON.stringify(badges)};
 var BALLINE=${JSON.stringify(balLine)};
@@ -163,6 +162,56 @@ function dropFood(dd){
     })(i);
   }
 }
+// 走路(散步/回家)结束时,把动画交还给"当前状态"。
+// 以前只有守护每一拍注入时才会顺手还原动画(见文件末尾的 __tokPetSet(S)),于是守护一死、
+// 或者刚好卡在最长 5 秒的注入节流窗口里,宠物就永久定格在走路那一行、原地踏到天荒地老
+//(用户报的"散步回到原点后一直保持走路动画")。
+function restoreAnim(dd){
+  if(!dd||!window.__tokPetSet)return;
+  if(dd._drag||dd._ovl>Date.now())return;   // 拖拽中 / 摸头跳跃等临时动作期间不抢
+  window.__tokPetSet(dd._state||'idle');
+}
+// 实时工作框:守护每拍下发 EXT.work = {items:[{k,n,l2,l3}], more, multi}
+// 一个会话在跑时跟以前一样(阶段行 + 详情行);多个会话同时在跑时,每段上面加一行小字会话名、
+// 段与段之间画一条虚线,谁完工谁那一段自己消失(段数变了页面就重建一次)。
+// 只在"段的集合"真的变了才重建 DOM —— 每秒重建会闪一下;同一批会话只是文字在变就只改 textContent。
+function renderWork(b,WK){
+  var wk=b._work;if(!wk)return;
+  var items=(WK&&WK.items)||[];
+  var key=(WK.multi?'M':'S')+'|'+items.map(function(i){return i.k}).join(',')+'|'+(WK.more||0);
+  if(wk._key!==key){
+    wk._key=key;wk.textContent='';wk._rows=[];
+    for(var i=0;i<items.length;i++){
+      if(i>0){var dv=document.createElement('div');dv.style.cssText='border-top:2px dashed #c09355;margin:3px 0 1px;';wk.appendChild(dv);}
+      var box=document.createElement('div');
+      box.style.cssText='display:flex;flex-direction:column;align-items:stretch;';
+      var nm=null;
+      if(WK.multi){
+        nm=document.createElement('div');
+        nm.style.cssText='font-size:10px;color:#8a5a12;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+        box.appendChild(nm);
+      }
+      var l2=document.createElement('span');l2.style.cssText='font-size:14px;font-weight:700;color:#4a3117;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+      var l3=document.createElement('span');l3.style.cssText='font-size:12px;color:#8a6a3e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+      box.appendChild(l2);box.appendChild(l3);
+      wk.appendChild(box);
+      wk._rows.push({nm:nm,l2:l2,l3:l3});
+    }
+    if(WK.more>0){
+      var mr=document.createElement('div');
+      mr.style.cssText='font-size:10px;color:#8a5a12;margin-top:2px;padding-top:2px;border-top:2px dashed #c09355;';
+      mr.textContent='…还有 '+WK.more+' 个会话在跑';
+      wk.appendChild(mr);
+    }
+  }
+  var rows=wk._rows||[];
+  for(var j=0;j<items.length;j++){
+    var r=rows[j];if(!r)continue;
+    if(r.nm)r.nm.textContent=items[j].n||'';
+    r.l2.textContent=items[j].l2||'';
+    r.l3.textContent=items[j].l3||'';
+  }
+}
 // 空闲散步:掷骰走一段就走完(回家的活交给回家看门狗 walkHome,见创建分支)
 function startWalk(dd){
   if(dd._walking)return;
@@ -177,7 +226,7 @@ function startWalk(dd){
     if(!dd._walking||!dd.isConnected||dd._drag){dd._walking=false;return;}
     var c2=parseFloat(dd.style.left);
     var dl=target-c2;
-    if(Math.abs(dl)<3){dd._walking=false;return;}
+    if(Math.abs(dl)<3){dd._walking=false;restoreAnim(dd);return;}
     dd.style.left=(c2+(dl>0?2:-2))+'px';
     setTimeout(stepWalk,24);
   })();
@@ -187,7 +236,7 @@ var FR=${FRAMES_JSON};
 var PETS=${PETS_JSON};
 var SLUG=null;try{SLUG=localStorage.getItem('tokPetSlug')}catch(_){ }
 var PET=PETS.find(function(p){return p.slug===SLUG})||PETS[0];
-var VER='50';   // 页面模板版本:改了页面代码必须 +1。守卫与创建共用同一常量,避免两边写岔(曾因此不重建)
+var VER='52';   // 页面模板版本:改了页面代码必须 +1。守卫与创建共用同一常量,避免两边写岔(曾因此不重建)
 var d=document.getElementById('tok-pet');
 if(d&&d.dataset.v!==VER){d.remove();d=null;}
 if(!d){
@@ -290,16 +339,22 @@ if(!d){
       if(!d.isConnected||d._walking||d._drag||d._night||d._homeX==null)return;
       if(document.visibilityState==='hidden')return;
       var c=parseFloat(d.style.left);
-      if(!isFinite(c)||Math.abs(c-d._homeX)<=40)return;
+      if(!isFinite(c))return;
       var w2=d.offsetWidth||105;
       var tx=Math.max(8,Math.min(d._homeX,innerWidth-w2-8));   // 锚点可能因窗口缩放跑到视口外,夹回来
+      // 到家判定必须比"夹过的目标 tx",不能比原始 _homeX:锚点一旦落在夹取范围外(窗口变窄/改过缩放),
+      // |c-_homeX| 永远 >40 ⇒ 每 5 秒重放一次走路动画;而 tx===c 时方向恒取"往左",看着就是原地踏步。
+      if(Math.abs(c-tx)<=40){
+        if(tx!==d._homeX)d._homeX=tx;   // 锚点收敛到真正能落脚的地方,以后不再白走这一趟
+        return;
+      }
       d._walking=true;
       if(window.__tokPetSet)window.__tokPetSet(tx>c?'running-right':'running-left');
       (function st(){
-        if(!d.isConnected||!d._walking||d._drag||d._night){d._walking=false;return;}
+        if(!d.isConnected||!d._walking||d._drag||d._night){d._walking=false;restoreAnim(d);return;}
         var c2=parseFloat(d.style.left);
         var dl=tx-c2;
-        if(Math.abs(dl)<3){d._walking=false;return;}
+        if(Math.abs(dl)<3){d._walking=false;d._homeX=tx;restoreAnim(d);return;}
         d.style.left=(c2+(dl>0?2:-2))+'px';
         setTimeout(st,24);
       })();
@@ -323,7 +378,7 @@ function clampPet(){
 // 右键菜单:全局注册一次,版本号守卫(菜单定义不随元素重建)
 // ⚠ 守卫与赋值必须用同一个常量 MENUV:以前两处各写一个数字,只改一处就会出现
 //   "守卫永远不成立 → 每一拍都重新注册一遍菜单"的静默泄漏(每次注册都往 document 多加一个 contextmenu 监听)
-var MENUV='25';
+var MENUV='26';
 window.__tokPetBalLine=BALLINE;
 if(window.__tokPetMenuV!==MENUV){
   window.__tokPetMenuV=MENUV;
@@ -511,7 +566,9 @@ if(window.__tokPetMenuV!==MENUV){
       d.style.backgroundSize=(8*192*ns)+'px '+(cp.rows*208*ns)+'px';
       d.style.backgroundPosition='0px 0px';
     });
-    item('🙈 隐藏(重启后恢复)',function(){d.style.display='none'});
+    // 隐藏 = 撤掉元素 + 立一个"本页面会话内不再重建"的标志(见模板开头的守卫)。
+    // 老写法只设 display:none,元素还留在 DOM 里,守护重启也不会恢复它 —— 菜单承诺的"重启后恢复"是假的
+    item('🙈 隐藏(重启 ZCode 后恢复)',function(){window.__tokPetHidden=1;d.remove();});
     document.body.appendChild(m);
     var mw=m.getBoundingClientRect();
     m.style.left=Math.min(ev.clientX,innerWidth-mw.width-8)+'px';
@@ -579,7 +636,7 @@ if(d._bubble){
   var slots=[d._bubble._p1,d._bubble._p2,d._bubble._p3];
   // 对话框三种默认态互斥:点击回应(临时) > 实时工作框(工作中) > token 统计(空闲)
   if(ovTxt){slots.forEach(function(sl){sl.style.display='none'});d._bubble._p4.style.display='none';d._bubble._work.style.display='none';d._bubble._ov.textContent=ovTxt;d._bubble._ov.style.display='block';d._bubble._satRow.style.display='none';}
-  else if(WK){d._bubble._ov.style.display='none';d._bubble._work.style.display='flex';d._bubble._w2.textContent=WK.l2;d._bubble._w3.textContent=WK.l3;slots.forEach(function(sl){sl.style.display='none'});d._bubble._p4.style.display='none';d._bubble._satRow.style.display='none';}
+  else if(WK){d._bubble._ov.style.display='none';d._bubble._work.style.display='flex';renderWork(d._bubble,WK);slots.forEach(function(sl){sl.style.display='none'});d._bubble._p4.style.display='none';d._bubble._satRow.style.display='none';}
   else{d._bubble._ov.style.display='none';d._bubble._work.style.display='none';
   for(var pi=0;pi<3;pi++){
     var bd=BADGES[pi];

@@ -115,3 +115,34 @@ process.on('uncaughtException', () => { });   // MCP 入口绝不能崩:崩了 Z
 ensureDaemon().then((r) => {
   try { fs.appendFileSync(path.join(DATA_DIR, 'mcp-bootstrap.log'), new Date().toISOString() + ' ' + r + '\n'); } catch (_) { }
 });
+
+// ---------- 守护存活巡检 ----------
+// ensureDaemon() 只在 MCP 进程启动时跑一次,而 MCP 进程能跟着 ZCode 活一整天:
+// 守护中途崩掉/被杀就没人再拉了。实测崩一次之后,桌宠定格了 8 小时(动画停在走路那一行、
+// 统计不再更新),因为没有注入就没人还原动画。这里每 30 秒问一次 9226,掉了就重新拉起。
+// 连续拉不起来就退避到 5 分钟一次,免得坏代码把进程打满。
+const SUP_MS = 30000, SUP_BACKOFF_MS = 300000;
+let supBusy = false, supFails = 0, supNextAt = 0;
+function supLog(s) {
+  try { fs.appendFileSync(path.join(DATA_DIR, 'mcp-bootstrap.log'), new Date().toISOString() + ' ' + s + '\n'); } catch (_) { }
+}
+async function supervise() {
+  if (supBusy) return;
+  const now = Date.now();
+  if (now < supNextAt) return;
+  supBusy = true;
+  try {
+    if (await portAlive(LOCK_PORT, 800)) { supFails = 0; supNextAt = 0; return; }
+    const r = await ensureDaemon();
+    if (r === 'spawned' || r === 'already-running') {
+      supLog('巡检:守护不在,已重新拉起 (' + r + ')');
+      supFails = 0; supNextAt = 0;
+    } else {
+      supFails++;
+      supNextAt = Date.now() + (supFails >= 2 ? SUP_BACKOFF_MS : 0);
+      supLog('巡检:拉起失败 ' + r + ' (连续 ' + supFails + ' 次' + (supFails >= 2 ? ',退避 5 分钟' : '') + ')');
+    }
+  } catch (_) {
+  } finally { supBusy = false; }
+}
+setInterval(supervise, SUP_MS);
