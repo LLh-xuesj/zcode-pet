@@ -74,10 +74,10 @@ function bubbleHtml() {
   var w2=document.createElement('span');w2.style.cssText='font-size:11px;color:#4a3117;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
   var w3=document.createElement('span');w3.style.cssText='font-size:10px;color:#8a6a3e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
   wk.appendChild(w1);wk.appendChild(w2);wk.appendChild(w3);
-  b.insertBefore(wk,satRow);
-  b._work=wk;b._w1=w1;b._w2=w2;b._w3=w3;
   satRow.appendChild(satLbl);satRow.appendChild(satBarRow);satRow.appendChild(mdl);
   b.appendChild(satRow);
+  b.insertBefore(wk,satRow);   // 工作框排在饱食度行上面(satRow 必须先挂进 b,insertBefore 才合法)
+  b._work=wk;b._w1=w1;b._w2=w2;b._w3=w3;
   b._satRow=satRow;b._satLbl=satLbl;b._satBar=satBar;b._satFill=satFill;b._satCap=satCap;b._mdl=mdl;
   // 番茄钟胶囊(第 4 枚)
   b._p4=document.createElement('span');
@@ -187,7 +187,7 @@ var FR=${FRAMES_JSON};
 var PETS=${PETS_JSON};
 var SLUG=null;try{SLUG=localStorage.getItem('tokPetSlug')}catch(_){ }
 var PET=PETS.find(function(p){return p.slug===SLUG})||PETS[0];
-var VER='47';   // 页面模板版本:改了页面代码必须 +1。守卫与创建共用同一常量,避免两边写岔(曾因此不重建)
+var VER='48';   // 页面模板版本:改了页面代码必须 +1。守卫与创建共用同一常量,避免两边写岔(曾因此不重建)
 var d=document.getElementById('tok-pet');
 if(d&&d.dataset.v!==VER){d.remove();d=null;}
 if(!d){
