@@ -56,13 +56,24 @@ ws.Run "node C:\path\to\zcode-pet\src\daemon.js", 0, False
 
 ### 2. 装宠物（下载精灵图）
 
-精灵图不在仓库里（素材来自 [Petdex](https://petdex.dev)，版权归各自作者），用自带的下载工具装：
+精灵图不在仓库里（素材来自 [Petdex](https://petdex.dev)，4800+ 只，版权归各自作者）。装好插件后**直接在 ZCode 对话里输 `/pet` 命令**最省事：
+
+```text
+/pet list            看装了哪几只、当前激活哪只
+/pet 柴犬            按关键词找，AI 会拉出预览图帮你挑长相
+                     （Petdex 名字与长相常对不上，以预览图为准）
+/pet install shiba   装（校验尺寸 → 写名单 → 自动重启守护）
+/pet switch shiba    切换当前宠物
+/pet remove shiba    移除（加 --purge 连素材一起删）
+```
+
+不想进对话、想手动操作的话，用自带的命令行工具（无依赖，数据目录自动识别）：
 
 ```bash
 node scripts/pet-add.js list                 # 看装了哪几只
 node scripts/pet-add.js search 柴犬           # 关键词找（中英文都行）
-node scripts/pet-add.js preview shiba piyo   # 生成缩略图先看长相（名字和长相常不符,以预览为准）
-node scripts/pet-add.js install shiba        # 装(校验尺寸→写名单→重启守护)
+node scripts/pet-add.js preview shiba piyo   # 生成缩略图先看长相
+node scripts/pet-add.js install shiba        # 装
 node scripts/pet-add.js restart              # 只重启守护
 ```
 
