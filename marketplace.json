@@ -8,7 +8,7 @@
     {
       "name": "zcode-pet",
       "source": "./",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "description": "ZCode 窗口里的像素桌宠:token/费用/余额胶囊 + 养成系统。A pixel desktop pet living inside the ZCode window.",
       "displayName": "桌宠",
       "displayName_i18n": {

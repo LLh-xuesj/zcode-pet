@@ -233,7 +233,12 @@ function findDaemon() {
       list.find((p) => p && p.name === 'zcode-pet');
     if (entry && entry.installPath) {
       const d = path.join(entry.installPath, 'src', 'daemon.js');
-      if (fs.existsSync(d)) return { script: d, dataDir: PLUGIN_DATA_DIR, via: '插件(' + entry.version + ')' };
+      // 数据目录必须与 ZCode 的 ${ZCODE_PLUGIN_DATA} 一致 —— 它是 data/<插件名>@<市场名>。
+      // 以前写死 data/zcode-pet,而 MCP 拉起的守护用的是带 @ 的目录,两种启动方式各记一本存档,养成进度会分叉
+      const byId = entry.name && entry.marketplace
+        ? path.join(path.dirname(PLUGIN_DATA_DIR), entry.name + '@' + entry.marketplace) : null;
+      const dataDir = (byId && fs.existsSync(byId)) ? byId : PLUGIN_DATA_DIR;
+      if (fs.existsSync(d)) return { script: d, dataDir, via: '插件(' + entry.version + ')' };
     }
   } catch (_) { }
   if (process.env.PET_CHIP_DAEMON && fs.existsSync(process.env.PET_CHIP_DAEMON)) {

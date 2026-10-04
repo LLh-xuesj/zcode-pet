@@ -23,7 +23,7 @@ const dbStats = U.dbStats, turnStats = U.turnStats, newestRollout = U.newestRoll
 const resolveApi = B.resolveApi, queryBalance = B.queryBalance, readPlanQuota = B.readPlanQuota,
       pickPlanItem = B.pickPlanItem, fmtReset = B.fmtReset, fmtUnits = B.fmtUnits, balInfoFor = B.balInfoFor,
       retryBalance = B.retryBalance;
-const defFor = P.defFor, isPeakBJ = P.isPeakBJ, readProvider = P.readProvider, apiList = P.apiList,
+const defFor = P.defFor, priceFor = P.priceFor, isPeakBJ = P.isPeakBJ, readProvider = P.readProvider, apiList = P.apiList,
       loadCustomDefs = P.loadCustomDefs, bigName = P.bigName;
 const { WEATHER, refreshWeather } = W;
 const petJs = PG.petJs, setBindName = PG.setBindName;
@@ -195,7 +195,7 @@ const TURN_KEEP_MS = 30 * 60 * 1000;  // 会话记录最多留 30 分钟,防 Map
 let displaySess = null;               // 当前展示的会话:用户最近一次"发起回合"的那个
 function turnOf(sid) {
   let t = turns.get(sid);
-  if (!t) { t = { open: false, phase: null, since: 0, lastAt: 0, model: '' }; turns.set(sid, t); }
+  if (!t) { t = { open: false, phase: null, since: 0, lastAt: 0, model: '', provider: '' }; turns.set(sid, t); }
   return t;
 }
 // 正在干活的会话(回合开着且刚动过);多个同时忙就取最近动过的那个 —— 宠物只有一个,展示最忙的那个
@@ -308,7 +308,11 @@ function scanLogForFailures() {
         const sid = (sm && sm[1]) || (j && j.sessionId) || '(未知会话)';
         const t = turnOf(sid);
         t.lastAt = ts;
-        const mm = /"modelId":"([^"]+)"/.exec(line);   // 工具调用行里带 providerId/modelId,顺手记下这个会话在用什么模型
+        // 工具调用行的 context 里带 providerId/modelId(model.request.started 行没有)⇒ 从工具行顺手记下
+        // 这个会话在用哪家的什么模型,「各会话」二级菜单和工作框的思考行都用它
+        const mp = /"providerId":"([^"]+)"/.exec(line);
+        if (mp) t.provider = mp[1];
+        const mm = /"modelId":"([^"]+)"/.exec(line);
         if (mm) t.model = mm[1];
         if (ev === 'turn.phase.started' || ev === 'turn.started') {
           if (!t.open) { t.phase = null; t.since = ts; }   // 新回合:清掉上一回合残留的阶段
@@ -503,9 +507,10 @@ async function tickOnce() {
   // 点击回应/喂食/番茄钟到点等 override 期间由页面隐藏它,结束自动回来。
   // 关键点:判据是"任意会话在忙"(busy),不是"这一个全局回合开关"——
   // 否则两个任务并行时,先完成的那一个会把另一个正在跑的回合一起关掉,气泡当场消失。
+  const busySess = busyList(now);
   ext.work = (function () {
     if (state !== 'running') return null;
-    const list = busyList(now);
+    const list = busySess;
     if (!list.length) return null;
     const MAXW = 3;                                  // 最多列 3 段,再多折叠成"…还有 N 个会话"
     const show = list.slice(0, MAXW);
@@ -576,6 +581,7 @@ async function tickOnce() {
     balLine = curApi.label + ':没配 API key(查不了余额)';
   }
   // 当前模型(大名)+ 已知 API 清单,供气泡与右键菜单显示
+  const curVid = currentSessionId(now);           // 统计/气泡当前跟的会话(菜单里标 ● 的那只)
   const apiInfo = {
     cur: curApi.label, sub: curApi.sub ? 1 : 0, model: curApi.modelId, pid: curApi.providerId,
     hasKey: curApi.key ? 1 : 0, billed: curApi.billed ? 1 : 0, peak: peak === null ? -1 : (peak ? 1 : 0),
@@ -587,6 +593,40 @@ async function tickOnce() {
     // ZCode 自己那份套餐额度(给账号型订阅用;顺便便于排查有没有读到)
     plan: (() => { const p = readPlanQuota(); return p ? { at: p.at, items: p.items.map((i) => i.name + ' ' + (i.used || 0) + '/' + (i.total || 0) + (i.end ? ' 剩' + fmtReset(i.end - Date.now()) : '')) } : null; })(),
   };
+  // 多会话时的「各会话」二级菜单:每个在跑的会话一行(会话名 + 模型大名 + 计费方式 + 该家余额/额度)。
+  // 余额来自按 provider 的缓存(balCache);没查到的家由下面的补查循环去问,查到前这格留空。
+  apiInfo.busy = busySess.map((it) => {
+    let pid = it.t.provider || '', mid = it.t.model || '';
+    if ((!pid || !mid) && it.sid === curVid && stats) { pid = pid || stats.providerId || ''; mid = mid || stats.modelId || ''; }
+    const sub = /^account:/i.test(pid);
+    const bb = pid ? B.balFor(pid) : null;
+    let balTxt = '';
+    if (bb && now - bb.ts < 120000) {
+      if (bb.kind === 'money' && bb.amt != null) balTxt = '余' + (bb.cur === 'USD' ? '$' : '¥') + bb.amt.toFixed(2);
+      else if (bb.kind === 'quota') balTxt = '📊 用' + Math.round(bb.used) + '%' + (bb.win ? '·' + bb.win : '');
+      else if (bb.kind === 'plan') {
+        const ip = pickPlanItem(bb.items, mid);
+        if (ip) balTxt = '📊 用' + (ip.total ? Math.round(((ip.used || 0) / ip.total) * 100) : 0) + '%';
+      } else if (bb.kind === 'none') balTxt = '无余额接口';
+    }
+    return {
+      sid: it.sid, n: clipName(it.title) || ('#' + shortSid(it.sid)), cur: it.sid === curVid ? 1 : 0,
+      mdl: pid ? bigName(pid, mid) : '', sub: sub ? 1 : 0,
+      billed: pid ? (!sub && !!priceFor(defFor(pid, mid), mid) ? 1 : 0) : 0,
+      bal: balTxt,
+    };
+  });
+  // 给在跑会话的各家 provider 补查余额(菜单用):内部有 25 秒 TTL,这里 5 拍一轮就够
+  if (tick % 5 === 0) {
+    for (const it of busySess) {
+      const pid = it.t.provider || (it.sid === curVid && stats ? stats.providerId : '');
+      if (!pid) continue;
+      const mid = it.t.model || (it.sid === curVid && stats ? stats.modelId : '');
+      const c = B.balFor(pid);
+      if (c && now - c.ts < 120000) continue;       // 2 分钟内的缓存就算了,别反复打接口
+      B.queryBalance(false, { providerId: pid, modelId: mid });
+    }
+  }
   ext.model = apiInfo;
   curState=state;curBadges=badges;curBalLine=balLine;curLowBal=lowBal;curExt=ext;
   const payload = state + '|' + JSON.stringify(badges) + '|' + balLine + '|' + JSON.stringify(ovr) + '|' + JSON.stringify(ext);

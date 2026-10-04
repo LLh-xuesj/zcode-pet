@@ -92,6 +92,7 @@ function balInfoFor(providerId, modelId, def) {
   return null;
 }
 let bal = null; // {kind:'money'|'quota'|'none', providerId, label, amt|used, cur, win, resetAt, probe, ts}
+const balCache = new Map();  // providerId -> bal(给「各会话」二级菜单用:bal 全局只跟着气泡的当前 provider 走,多会话时各家各存一份)
 let balBusy = false;
 let balTryAt = 0;    // 上次尝试取余额的时刻(见 tickOnce 的补试)
 let balFails = 0;    // 连续查空几次:启动时 provider 可能还没认出来,补试几次再退回 3 分钟一次
@@ -308,14 +309,32 @@ function pickPlanItem(items, modelId) {
   }
   return best;
 }
-async function queryBalance(force) {
-  const a = curApi;
-  if (!a || balBusy) return;
+async function queryBalance(force, alt) {
+  // alt = {providerId, modelId}:给「各会话」二级菜单用的按 provider 查询。
+  // 不动全局 curApi/bal(那是气泡胶囊的),结果只进 balCache;balBusy 共用,避免并发打接口。
+  let a = curApi, altMode = false;
   const now0 = Date.now();
-  balTryAt = now0;
-  // 25 秒内不重复打接口(和那只小鲸鱼一个数);点菜单刷新时 force=true 跳过
-  if (!force && bal && bal.ts && now0 - bal.ts < 25000) return;
-  const put = (o) => { bal = Object.assign({ providerId: a.providerId, label: a.label, ts: now0 }, o); };
+  if (alt && alt.providerId) {
+    altMode = true;
+    const def = defFor(alt.providerId, alt.modelId || '');
+    a = {
+      label: bigName(alt.providerId, alt.modelId || ''), model: alt.modelId || '', providerId: alt.providerId, modelId: alt.modelId || '',
+      sub: /^account:/i.test(alt.providerId), def, key: (def && def.key) || P.getApiKey(alt.providerId) || null,
+      balanceUrl: (def && def.balanceUrl) || null,
+    };
+    const c = balCache.get(a.providerId);
+    if (!force && c && c.ts && now0 - c.ts < 25000) return;
+  } else {
+    if (!a || balBusy) return;
+    balTryAt = now0;
+    // 25 秒内不重复打接口(和那只小鲸鱼一个数);点菜单刷新时 force=true 跳过
+    if (!force && bal && bal.ts && now0 - bal.ts < 25000) return;
+  }
+  const put = (o) => {
+    const v = Object.assign({ providerId: a.providerId, label: a.label, ts: now0 }, o);
+    balCache.set(a.providerId, v);
+    if (!altMode) bal = v;
+  };
   // 0) 账号型订阅(account:xxx):key 读不到,但套餐额度写在 ZCode 自己的日志里
   if (/^account:/i.test(a.providerId || '')) {
     const pq = readPlanQuota();
@@ -370,6 +389,7 @@ async function queryBalance(force) {
 
 function getCurApi() { return curApi; }
 function getBal() { return bal; }
+function balFor(providerId) { return (providerId && balCache.get(providerId)) || null; }   // 「各会话」菜单读这份
 function invalidateBal() { bal = null; }   // 换 provider / 改配置后调用,下一拍重查
 // tickOnce 每拍调用:余额还没拿到时按 20 秒节奏补试几次,拿到后归零计数
 function retryBalance(now) {
@@ -377,4 +397,4 @@ function retryBalance(now) {
   if (curApi.key && balTryAt && now - balTryAt > 20000 && balFails < 6) { balFails++; queryBalance(); }
 }
 
-module.exports = { resolveApi, getCurApi, getBal, invalidateBal, retryBalance, queryBalance, readPlanQuota, pickPlanItem, balInfoFor, fmtReset, fmtUnits };
+module.exports = { resolveApi, getCurApi, getBal, balFor, invalidateBal, retryBalance, queryBalance, readPlanQuota, pickPlanItem, balInfoFor, fmtReset, fmtUnits };
