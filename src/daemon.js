@@ -263,16 +263,55 @@ function sessionMeta(sid) {
 // 会话名太长就截断(气泡最宽 300px,名字行 10px 字,16 个字够用)
 function clipName(s) { s = String(s || '').trim().replace(/\s+/g, ' '); return s.length > 16 ? s.slice(0, 16) + '…' : s; }
 function shortSid(sid) { const m = /^sess_(.{6})/.exec(sid); return m ? m[1] : sid.slice(0, 6); }
-// 每个会话自己的「💸 按家拆账」:多会话时菜单里一个会话一行。dbStats 按会话全量查询,30 秒缓存
-const provCache = new Map();          // sid -> {txt, at}
-function provTxtFor(sid, now) {
-  const c = provCache.get(sid);
-  if (c && now - c.at < 30000) return c.txt;
-  let txt = '';
-  try { const s = dbStats(sid); if (s && s.provTxt) txt = s.provTxt; } catch (_) {}
-  if (provCache.size > 50) provCache.clear();
-  provCache.set(sid, { txt, at: now });
-  return txt;
+// 每个会话自己的用量/拆账:多会话时菜单里一个会话一行。dbStats 按会话全量查询,30 秒缓存
+const sessStatsCache = new Map();     // sid -> {turn,turnCost,sum,sumCost,provTxt,at}
+function sessStatsFor(sid, now) {
+  const c = sessStatsCache.get(sid);
+  if (c && now - c.at < 30000) return c;
+  let rec = { turn: '', turnCost: '', sum: '', sumCost: '', provTxt: '' };
+  try { const s = dbStats(sid); if (s) rec = { turn: s.turn, turnCost: s.cost || '', sum: s.sum, sumCost: s.sumCost, provTxt: s.provTxt }; } catch (_) {}
+  if (sessStatsCache.size > 50) sessStatsCache.clear();
+  rec.at = now;
+  sessStatsCache.set(sid, rec);
+  return rec;
+}
+// ---------- 多会话合并统计 ----------
+// ≥2 个会话同时在跑时记下名单(陆续完工的也不丢);等**全部**跑完(busy 归零),
+// Σ 胶囊改成「Σ13M¥0.67+25M+8M+…」分段相加各会话的用量 —— 钱跟在每个 M 后面,
+// 超过 3 段折叠省略号。单会话跑保持现状;下一次新回合开始,汇总自动让位。
+let multiSids = [];                   // 本轮多会话的名单
+let multiSum = null;                  // {txt, at} 全部跑完后的分段相加文本
+// 多会话状态机的纯函数一步(便于单测):输入旧状态与当前在忙名单,返回新状态
+function multiRunStep(sids, sum, busySess, now) {
+  const n = busySess.length;
+  if (n >= 2) {
+    const list = sids.slice();
+    for (const x of busySess) if (list.indexOf(x.sid) < 0) list.push(x.sid);
+    return { multiSids: list, multiSum: null };          // 新一轮(或续跑):清旧汇总、扩充名单
+  }
+  if (n === 1) {
+    if (sids.indexOf(busySess[0].sid) >= 0) return { multiSids: sids, multiSum: sum };   // 多会话剩一只,等它完工
+    return { multiSids: [], multiSum: null };            // 名单外的单会话:新一轮,旧汇总让位
+  }
+  if (sids.length >= 2) return { multiSids: [], multiSum: buildMultiSum(sids, now) };    // 全部跑完 → 生成分段相加
+  return { multiSids: [], multiSum: sum };               // 普通空闲:汇总保持(下个回合再让位)
+}
+function buildMultiSum(sids, now) {
+  const ZW = '\u200B';   // 零宽空格:胶囊挤满时浏览器在 + 号后面换行,不会把数字断成两截
+  const segs = [], tsegs = [];
+  for (const sid of sids) {
+    const s = sessStatsFor(sid, now);
+    if (!s || !s.sum) continue;                          // 查不到用量(如探针)的会话不进汇总
+    segs.push(s.sum.replace(/^Σ/, '') + (s.sumCost || ''));                                   // Σ累计段
+    if (s.turn) tsegs.push(s.turn.replace(/^⚡/, '').replace(/×\d+$/, '') + (s.turnCost || ''));  // ⚡本轮段(去掉×请求数)
+  }
+  if (segs.length < 2) return null;                      // 凑不满两段就没有"分段"的意义
+  const pack = (a, pre) => pre + a.slice(0, 3).join('+' + ZW) + (a.length > 3 ? '+' + ZW + '…' : '');
+  return { txt: pack(segs, 'Σ'), turnTxt: pack(tsegs, '⚡'), at: now };
+}
+function stepMultiRun(busySess, now) {
+  const r = multiRunStep(multiSids, multiSum, busySess, now);
+  multiSids = r.multiSids; multiSum = r.multiSum;
 }
 
 function sweepTurns(now) {
@@ -519,6 +558,7 @@ async function tickOnce() {
   // 关键点:判据是"任意会话在忙"(busy),不是"这一个全局回合开关"——
   // 否则两个任务并行时,先完成的那一个会把另一个正在跑的回合一起关掉,气泡当场消失。
   const busySess = busyList(now);
+  stepMultiRun(busySess, now);   // 多会话合并统计状态机(全部跑完后 Σ 胶囊变分段相加,见 multiRunStep)
   ext.work = (function () {
     if (state !== 'running') return null;
     const list = busySess;
@@ -543,8 +583,11 @@ async function tickOnce() {
   retryBalance(now);
   const curApi = B.getCurApi(), bal = B.getBal();
   const badges = [];
-  if (st.turn) badges.push({ t: st.turn + (st.cost ? ' ' + st.cost : ''), c: 'turn' });
-  if (st.sum) badges.push({ t: st.sum + (st.sumCost ? ' ' + st.sumCost : ''), c: 'sum' });
+  if (st.turn) badges.push({ t: multiSum ? multiSum.turnTxt : st.turn + (st.cost ? ' ' + st.cost : ''), c: 'turn', w: multiSum ? 1 : 0 });
+  if (st.sum) {
+    // 多会话全部跑完后的汇总态:两个胶囊都分段相加(Σ累计与⚡本轮),长胶囊由页面在 + 号后自动换行
+    badges.push({ t: multiSum ? multiSum.txt : st.sum + (st.sumCost ? ' ' + st.sumCost : ''), c: 'sum', w: multiSum ? 1 : 0 });
+  }
   let balLine = '', lowBal = false;
   // 峰/谷只在"价格分峰谷"的 provider 上有意义(内置 DeepSeek);自定义 provider 单价不分峰谷就不标
   const peak = curApi.peakBased ? isPeakBJ(now) : null;
@@ -625,7 +668,8 @@ async function tickOnce() {
       sid: it.sid, n: clipName(it.title) || ('#' + shortSid(it.sid)), cur: it.sid === curVid ? 1 : 0,
       mdl: pid ? bigName(pid, mid) : '', sub: sub ? 1 : 0,
       billed: pid ? (!sub && !!priceFor(defFor(pid, mid), mid) ? 1 : 0) : 0,
-      bal: balTxt, prov: provTxtFor(it.sid, now),
+      bal: balTxt, prov: sessStatsFor(it.sid, now).provTxt,
+      usg: (() => { const s = sessStatsFor(it.sid, now); return (s.turn ? s.turn + ' · ' : '') + s.sum + (s.sumCost ? ' ' + s.sumCost : ''); })(),
     };
   });
   // 给在跑会话的各家 provider 补查余额(菜单用):内部有 25 秒 TTL,这里 5 拍一轮就够

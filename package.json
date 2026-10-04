@@ -1,6 +1,6 @@
 {
   "name": "zcode-pet",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "A pixel desktop pet living inside the ZCode window: token/cost/balance pills + a tamagotchi-style raising system. ZCode 窗口里的像素桌宠。",
   "main": "src/daemon.js",
   "bin": { "pet-add": "scripts/pet-add.js" },

@@ -236,7 +236,7 @@ var FR=${FRAMES_JSON};
 var PETS=${PETS_JSON};
 var SLUG=null;try{SLUG=localStorage.getItem('tokPetSlug')}catch(_){ }
 var PET=PETS.find(function(p){return p.slug===SLUG})||PETS[0];
-var VER='52';   // 页面模板版本:改了页面代码必须 +1。守卫与创建共用同一常量,避免两边写岔(曾因此不重建)
+var VER='53';   // 页面模板版本:改了页面代码必须 +1。守卫与创建共用同一常量,避免两边写岔(曾因此不重建)
 var d=document.getElementById('tok-pet');
 if(d&&d.dataset.v!==VER){d.remove();d=null;}
 if(!d){
@@ -378,7 +378,7 @@ function clampPet(){
 // 右键菜单:全局注册一次,版本号守卫(菜单定义不随元素重建)
 // ⚠ 守卫与赋值必须用同一个常量 MENUV:以前两处各写一个数字,只改一处就会出现
 //   "守卫永远不成立 → 每一拍都重新注册一遍菜单"的静默泄漏(每次注册都往 document 多加一个 contextmenu 监听)
-var MENUV='28';
+var MENUV='29';
 window.__tokPetBalLine=BALLINE;
 if(window.__tokPetMenuV!==MENUV){
   window.__tokPetMenuV=MENUV;
@@ -467,6 +467,16 @@ if(window.__tokPetMenuV!==MENUV){
         itemSub(PROV?('💸 本会话 '+PROV):'💸 本会话(各会话拆账)',function(sub){
           BUSY.forEach(function(b){
             subRow(sub,(b.cur?'● ':'\u3000')+b.n+' · '+(b.prov||'还没花钱'),!!b.cur);
+          });
+        });
+      }
+      // 各会话用量:每个在跑的会话一行(⚡本轮 · Σ累计 费用)
+      var anyUsg=false;
+      for(var ui=0;ui<BUSY.length;ui++)if(BUSY[ui].usg)anyUsg=true;
+      if(anyUsg){
+        itemSub('📈 各会话用量('+BUSY.length+')',function(sub){
+          BUSY.forEach(function(b){
+            subRow(sub,(b.cur?'● ':'\u3000')+b.n+' · '+(b.usg||'—'),!!b.cur);
           });
         });
       }
@@ -684,6 +694,7 @@ if(d._bubble){
     var bd=BADGES[pi];
     if(bd){var cf=CLS[bd.c]||CLS.turn;
       slots[pi].style.display='inline-block';slots[pi].textContent=bd.t;
+      slots[pi].style.whiteSpace=bd.w?'normal':'nowrap';   // 多会话汇总的长胶囊:文本里埋了零宽空格,允许在 + 号后自动换行
       slots[pi].style.color=cf.c;slots[pi].style.borderColor=cf.b;slots[pi].style.background=cf.g;
     } else slots[pi].style.display='none';
   }
