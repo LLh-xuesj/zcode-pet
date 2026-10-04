@@ -311,12 +311,15 @@ function unhideAll() {
   ovr = { text: n ? '♻ 已恢复 ' + n + ' 个隐藏的会话' : '本来就没有隐藏的会话', until: Date.now() + 3500 };
   injectNow();
 }
-// 每个会话最近几轮(菜单「🕘 最近三轮」):走全表扫描,10 秒查一次就够,别跟着 1 秒的拍打库
+// 每个会话最近几轮 + 该会话的 ⚡本轮/Σ累计/拆账(菜单「📊 各会话用量与最近三轮」):
+// 一次全表扫描就带回所有会话(见 usage.js 的 recentBySession),10 秒查一次,别跟着 1 秒的拍打库。
+// 上限 30 个会话:面板比屏幕还高时在自己内部滚动,再往前的会话多半也不看了(超出时 footer 会说明)。
+const RECENT_MAX_SESS = 30;
 let recentCache = null, recentAt = 0;
 function recentRaw(now) {
   if (recentCache && now - recentAt < 10000) return recentCache;
   let data = null;
-  try { data = recentBySession(3, 6); } catch (_) { data = null; }
+  try { data = recentBySession(3, RECENT_MAX_SESS); } catch (_) { data = null; }
   recentCache = data; recentAt = now;
   return data;
 }
@@ -737,31 +740,36 @@ async function tickOnce() {
       bal: balTxt, prov: sessStatsFor(it.sid, now).provTxt,
     };
   });
-  // 菜单「📊 各会话用量与最近三轮」:每个会话一行 Σ/本轮用量 + 最近 3 轮的 token/模型/时间戳。
+  // 菜单「📊 各会话用量与最近三轮」:每个会话一段 —— 标题 + ✕ + ⚡本轮/Σ累计(含按家拆账)+ 最近 3 轮。
   // 会话按最近一轮排序,只列有 main_turn 记录的(子代理已在查询里排除,归档会话同理);
-  // 用户手动隐藏的会话也不列。在跑/当前会话分别打标记。
+  // 用户手动隐藏的会话也不列。在跑/当前会话分别打标记。列满 30 个会话就不往下取了(capped)。
   // 数据 10 秒一次(见 recentRaw),标记(●/在跑)每拍重算 —— 会话刚跑完,"在跑"立刻消失。
   apiInfo.recent = (function () {
     const data = recentRaw(now);
-    if (!data || !data.length) return null;
+    if (!data || !data.items || !data.items.length) return null;
     const busyOn = {};
     for (const x of busySess) busyOn[x.sid] = 1;
     const items = [];
-    for (const s of data) {
+    for (const s of data.items) {
       const m = sessionMeta(s.sid);
       if (m.taskType && m.taskType !== 'interactive') continue;   // 派活/旁路会话不列(与工作框同口径)
       if (hiddenSess.has(s.sid)) continue;                        // 用户在面板里 ✕ 掉的
-      const ss = sessStatsFor(s.sid, now);
+      const ag = s.agg || {};   // 与菜单「💸 本会话」同一份 aggRows 算出来的,不再为每个会话单独查库
       items.push({
         sid: s.sid, n: clipName(m.title) || ('#' + shortSid(s.sid)),
         cur: s.sid === curVid ? 1 : 0, busy: busyOn[s.sid] ? 1 : 0,
         // usg = 这个会话本轮 + 累计(与旧「📈 各会话用量」二级菜单同口径),prov = 累计按家拆账
-        usg: (ss.turn ? ss.turn + ' · ' : '') + ss.sum + (ss.sumCost ? ' ' + ss.sumCost : ''),
-        prov: ss.provTxt || '',
+        usg: (ag.turn ? ag.turn + ' · ' : '') + (ag.sum || '') + (ag.sumCost ? ' ' + ag.sumCost : ''),
+        prov: ag.provTxt || '',
         rows: s.turns.map((t) => ({ t: clockTxt(t.at), m: t.mid || '未知模型', u: fmt(t.tokens), c: t.costTxt, q: t.n, k: t.turn })),
       });
     }
-    return items.length ? { upd: clockTxt(recentAt), hid: hiddenSess.size, items } : null;
+    if (!items.length) return null;
+    return {
+      upd: clockTxt(recentAt), hid: hiddenSess.size, total: items.length,
+      capped: data.total > data.items.length ? 1 : 0,   // 取回时就被上限截断了(更早的会话没进列表)
+      items,
+    };
   })();
   // 给在跑会话的各家 provider 补查余额(菜单用):内部有 25 秒 TTL,这里 5 拍一轮就够
   if (tick % 5 === 0) {

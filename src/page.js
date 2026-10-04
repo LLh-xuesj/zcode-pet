@@ -239,7 +239,7 @@ var FR=${FRAMES_JSON};
 var PETS=${PETS_JSON};
 var SLUG=null;try{SLUG=localStorage.getItem('tokPetSlug')}catch(_){ }
 var PET=PETS.find(function(p){return p.slug===SLUG})||PETS[0];
-var VER='56';   // 页面模板版本:改了页面代码必须 +1。守卫与创建共用同一常量,避免两边写岔(曾因此不重建)
+var VER='57';   // 页面模板版本:改了页面代码必须 +1。守卫与创建共用同一常量,避免两边写岔(曾因此不重建)
 var d=document.getElementById('tok-pet');
 if(d&&d.dataset.v!==VER){d.remove();d=null;}
 if(!d){
@@ -381,7 +381,7 @@ function clampPet(){
 // 右键菜单:全局注册一次,版本号守卫(菜单定义不随元素重建)
 // ⚠ 守卫与赋值必须用同一个常量 MENUV:以前两处各写一个数字,只改一处就会出现
 //   "守卫永远不成立 → 每一拍都重新注册一遍菜单"的静默泄漏(每次注册都往 document 多加一个 contextmenu 监听)
-var MENUV='32';
+var MENUV='33';
 window.__tokPetBalLine=BALLINE;
 if(window.__tokPetMenuV!==MENUV){
   window.__tokPetMenuV=MENUV;
@@ -482,7 +482,7 @@ if(window.__tokPetMenuV!==MENUV){
     item('📊 各会话用量与最近三轮'+(REC?('('+REC.items.length+' 个会话)'):''),function(){
       var had=document.getElementById('tok-pet-recent');if(had)had.remove();
       var rp=document.createElement('div');rp.id='tok-pet-recent';
-      rp.style.cssText='position:fixed;z-index:2147483647;padding:8px 10px;background:#f7e2b8;border:3px solid #6b4423;border-radius:6px;box-shadow:inset 0 0 0 2px #fdf3d9,inset 0 0 0 3px #d8b478,4px 4px 0 0 rgba(40,24,8,.45);font:600 11px/1.9 Consolas,ui-monospace,monospace;color:#4a3117;width:360px;max-height:calc(100vh - 24px);overflow:auto;';
+      rp.style.cssText='position:fixed;z-index:2147483647;padding:8px 10px;background:#f7e2b8;border:3px solid #6b4423;border-radius:6px;box-shadow:inset 0 0 0 2px #fdf3d9,inset 0 0 0 3px #d8b478,4px 4px 0 0 rgba(40,24,8,.45);font:600 11px/1.9 Consolas,ui-monospace,monospace;color:#4a3117;width:360px;max-height:calc(100vh - 24px);overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#b98a4e #efd6a8;';
       function line(ri,t){
         var e=document.createElement('div');e.style.cssText='display:flex;gap:6px;align-items:baseline;white-space:nowrap;';
         var a1=document.createElement('span');a1.textContent=NUM[ri]||'·';a1.style.cssText='flex:0 0 auto;opacity:.6;';
@@ -512,6 +512,13 @@ if(window.__tokPetMenuV!==MENUV){
           e3.addEventListener('click',function(e){e.stopPropagation();emitReq('unhide','all');window.__tokPetHid={};close();});
           f.appendChild(e3);
         }
+        // 会话多到面板比屏幕还高时,它自己在内部滚动(见 rp 的 overflow:auto),这里交代一句
+        if(REC&&REC.total>6){
+          var e4=document.createElement('div');
+          e4.textContent='↕ 会话多的时候面板内可滚动'+(REC.capped?(' · 只列最近 '+REC.items.length+' 个'):'');
+          e4.style.cssText='margin-top:3px;opacity:.6;white-space:normal;';
+          f.appendChild(e4);
+        }
         return f;
       }
       var NUM=['①','②','③','④','⑤','⑥'];
@@ -524,7 +531,7 @@ if(window.__tokPetMenuV!==MENUV){
       var cl=function(e2){if(rp.contains(e2.target))return;close();};
       var ky=function(e2){if(e2.key==='Escape')close();};
       var localHid=0;
-      var h0=document.createElement('div');h0.textContent='📊 各会话用量与最近三轮'+(REC?(' · 更新于 '+REC.upd):'');
+      var h0=document.createElement('div');   // 文案在 draw() 里写:当场藏掉一个会话,数量要跟着变
       h0.style.cssText='color:#96500f;margin-bottom:4px;';rp.appendChild(h0);
       var box=document.createElement('div');rp.appendChild(box);   // 可重画区:藏掉一个就当场把它那一段去掉
       function draw(){
@@ -532,6 +539,7 @@ if(window.__tokPetMenuV!==MENUV){
         var items=((REC&&REC.items)||[]).filter(function(it){
           return !it.hid && !(window.__tokPetHid||{})[it.sid];
         });
+        h0.textContent='📊 各会话用量与最近三轮'+(items.length?(' · 共 '+items.length+' 个会话'):'')+(REC?(' · 更新于 '+REC.upd):'');
         if(!items.length){
           var em=document.createElement('div');
           em.textContent=REC?'这个列表里的会话都被你隐藏了(或都归档了)。':'没读到用量数据。守护读的是 ZCode 的 db.sqlite(MCP 进程用同一个库),库打不开或还没有任何回合记录时就是这样。';

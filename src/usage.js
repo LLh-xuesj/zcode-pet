@@ -85,6 +85,55 @@ function db() {
   } catch (_) { dbBroken = true; }
   return dbConn;
 }
+// 一组同属一个会话的 model_usage 行(query_source='main_turn')→ ⚡本轮 / Σ累计 / 按家拆账。
+// dbStats(按会话查库)与 recentBySession(全表扫完按会话分组)共用这一份 —— 面板要列几十个会话,
+// 每个再单独查一次库就是几十次全表扫描(实测每会话约 13ms),同一口径分两处写也迟早走偏。
+function aggRows(rows) {
+  if (!rows || !rows.length) return null;
+  const turns = new Map();
+  let sessTotal = 0, sessCost = 0, latestAt = -1, latestProv = '', latestModel = '';
+  const perCur = new Map();   // 币种 → 费用(混币种会话极少见,避免把 $ 直接加到 ¥ 上)
+  const perProv = new Map();  // provider → 费用(菜单「本会话」明细用:Σ 胶囊不拆家,看不出钱花在哪)
+  for (const r of rows) {
+    const u = { cacheReadTokens: r.cache_read_input_tokens || 0, inputTokens: r.input_tokens || 0, outputTokens: r.output_tokens || 0 };
+    const c = costOf(u, r.provider_id, r.model_id, r.started_at); // 订阅套餐(account: 开头)不计费 → 0
+    const tk = r.computed_total_tokens != null ? r.computed_total_tokens : u.inputTokens + u.outputTokens;
+    sessTotal += tk; sessCost += c;
+    const cur = curOf(r.provider_id, r.model_id);
+    perCur.set(cur, (perCur.get(cur) || 0) + c);
+    const pk = r.provider_id || '?';
+    const pe = perProv.get(pk) || { label: bigName(r.provider_id, r.model_id), cost: 0, cur };
+    pe.cost += c;
+    perProv.set(pk, pe);
+    if ((r.started_at || 0) >= latestAt) { latestAt = r.started_at || 0; latestProv = r.provider_id || ''; latestModel = r.model_id || ''; }
+    const t = turns.get(r.turn_id) || { total: 0, n: 0, cost: 0, at: -1 };
+    t.total += tk; t.n += 1; t.cost += c;
+    if ((r.started_at || 0) >= t.at) t.at = r.started_at || 0;
+    turns.set(r.turn_id, t);
+  }
+  let last = null;
+  for (const t of turns.values()) if (!last || t.at >= last.at) last = t;
+  let curMain = '¥', curMax = -1;
+  for (const [k, v] of perCur) if (v >= curMax) { curMax = v; curMain = k; }
+  // 只有"按量计费的 API"才显示费用:订阅套餐没有单价,未知 provider 没有价格表 → 都不显示
+  const billed = !/^account:/i.test(latestProv) && !!priceFor(defFor(latestProv, latestModel), latestModel);
+  // Σ 胶囊的 ¥ 只算**当前在用的这家**(用户 2026-10-03:"我用那个模型,蓝色胶囊就显示那个模型的计费");
+  // 整个会话混家的总账在菜单「💸 本会话」里看
+  const curCost = (perProv.get(latestProv) || { cost: 0 }).cost;
+  return {
+    turn: `⚡${fmt(last.total)}${last.n > 1 ? '×' + last.n : ''}`,
+    cost: billed ? fmtCost(last.cost, curOf(latestProv, latestModel)) : '',
+    sum: 'Σ' + fmt(sessTotal),
+    sumCost: billed ? fmtCost(curCost, curOf(latestProv, latestModel)) : '',
+    providerId: latestProv, modelId: latestModel,
+    // 本会话按家拆账(只列花了钱的,最多 3 家;不 gated 在 billed 上——当前切回订阅时明细照样能看)
+    provTxt: (() => {
+      const arr = [...perProv.values()].filter((e) => e.cost > 0.0005).sort((a, b) => b.cost - a.cost).slice(0, 3);
+      return arr.length ? fmtCost(sessCost, curMain) + '(' + arr.map((e) => e.label + ' ' + fmtCost(e.cost, e.cur)).join(' · ') + ')' : '';
+    })(),
+  };
+}
+
 function dbStats(sessionId) {
   if (!sessionId) return null;
   const conn = db();
@@ -94,58 +143,19 @@ function dbStats(sessionId) {
       "SELECT turn_id, provider_id, model_id, started_at, input_tokens, output_tokens, cache_read_input_tokens, computed_total_tokens"
       + " FROM model_usage WHERE session_id = ? AND query_source = 'main_turn'"
     ).all(sessionId);
-    if (!rows.length) return null;
-    const turns = new Map();
-    let sessTotal = 0, sessCost = 0, latestAt = -1, latestProv = '', latestModel = '';
-    const perCur = new Map();   // 币种 → 费用(混币种会话极少见,避免把 $ 直接加到 ¥ 上)
-    const perProv = new Map();  // provider → 费用(菜单「本会话」明细用:Σ 胶囊不拆家,看不出钱花在哪)
-    for (const r of rows) {
-      const u = { cacheReadTokens: r.cache_read_input_tokens || 0, inputTokens: r.input_tokens || 0, outputTokens: r.output_tokens || 0 };
-      const c = costOf(u, r.provider_id, r.model_id, r.started_at); // 订阅套餐(account: 开头)不计费 → 0
-      const tk = r.computed_total_tokens != null ? r.computed_total_tokens : u.inputTokens + u.outputTokens;
-      sessTotal += tk; sessCost += c;
-      const cur = curOf(r.provider_id, r.model_id);
-      perCur.set(cur, (perCur.get(cur) || 0) + c);
-      const pk = r.provider_id || '?';
-      const pe = perProv.get(pk) || { label: bigName(r.provider_id, r.model_id), cost: 0, cur };
-      pe.cost += c;
-      perProv.set(pk, pe);
-      if ((r.started_at || 0) >= latestAt) { latestAt = r.started_at || 0; latestProv = r.provider_id || ''; latestModel = r.model_id || ''; }
-      const t = turns.get(r.turn_id) || { total: 0, n: 0, cost: 0, at: -1 };
-      t.total += tk; t.n += 1; t.cost += c;
-      if ((r.started_at || 0) >= t.at) t.at = r.started_at || 0;
-      turns.set(r.turn_id, t);
-    }
-    let last = null;
-    for (const t of turns.values()) if (!last || t.at >= last.at) last = t;
-    let curMain = '¥', curMax = -1;
-    for (const [k, v] of perCur) if (v >= curMax) { curMax = v; curMain = k; }
-    // 只有"按量计费的 API"才显示费用:订阅套餐没有单价,未知 provider 没有价格表 → 都不显示
-    const billed = !/^account:/i.test(latestProv) && !!priceFor(defFor(latestProv, latestModel), latestModel);
-    // Σ 胶囊的 ¥ 只算**当前在用的这家**(用户 2026-10-03:"我用那个模型,蓝色胶囊就显示那个模型的计费");
-    // 整个会话混家的总账在菜单「💸 本会话」里看
-    const curCost = (perProv.get(latestProv) || { cost: 0 }).cost;
-    return {
-      turn: `⚡${fmt(last.total)}${last.n > 1 ? '×' + last.n : ''}`,
-      cost: billed ? fmtCost(last.cost, curOf(latestProv, latestModel)) : '',
-      sum: 'Σ' + fmt(sessTotal),
-      sumCost: billed ? fmtCost(curCost, curOf(latestProv, latestModel)) : '',
-      providerId: latestProv, modelId: latestModel,
-      // 本会话按家拆账(只列花了钱的,最多 3 家;不 gated 在 billed 上——当前切回订阅时明细照样能看)
-      provTxt: (() => {
-        const arr = [...perProv.values()].filter((e) => e.cost > 0.0005).sort((a, b) => b.cost - a.cost).slice(0, 3);
-        return arr.length ? fmtCost(sessCost, curMain) + '(' + arr.map((e) => e.label + ' ' + fmtCost(e.cost, e.cur)).join(' · ') + ')' : '';
-      })(),
-    };
+    return aggRows(rows);
   } catch (_) { return null; }   // 库忙/被占 → 保留上一次结果
 }
 
-// ---------- 每个会话最近几轮(右键菜单「🕘 最近三轮」用) ----------
+// ---------- 每个会话最近几轮(右键菜单「📊 各会话用量与最近三轮」用) ----------
 // 一轮 = 一个 turn_id:轮内每次请求的 token 相加(与 Σ 胶囊同口径,computed_total_tokens),
 // 模型与费用按该轮**最后一次**请求算(一轮里边聊边换模型极少见),时间取该轮第一次请求的 started_at。
 // 子代理会话(sess_subagent_*)不列:它们的活算在派它的父会话名下,工作框也不单列。
 // 归档会话(session.time_archived 非空)不列:用户在 ZCode 里归档了就是不想再看见它。
-// 一次全表扫描换回所有会话的成本很低(4k 行 <10ms),但没必要跟着 1 秒的拍走 —— 由调用方缓存。
+// 一次全表扫描换回所有会话的成本很低(4k 行 <50ms),但没必要跟着 1 秒的拍走 —— 由调用方缓存。
+// 顺手用同一批行算出每个会话的 ⚡本轮 / Σ累计 / 按家拆账(aggRows,与菜单「💸 本会话」同一份口径),
+// 调用方就不用为面板里几十个会话各查一次库了。
+// 返回 { items, total, maxSess }:total = 有记录的会话总数,items 只取最近的 maxSess 个。
 function recentBySession(n, maxSess) {
   const conn = db();
   if (!conn) return null;
@@ -154,29 +164,34 @@ function recentBySession(n, maxSess) {
     const rows = conn.prepare(
       "SELECT mu.session_id, mu.turn_id, mu.provider_id, mu.model_id, mu.started_at,"
       + " COALESCE(mu.computed_total_tokens, mu.input_tokens + mu.output_tokens) tk,"
-      + " mu.input_tokens, mu.output_tokens, mu.cache_read_input_tokens"
+      + " mu.input_tokens, mu.output_tokens, mu.cache_read_input_tokens, mu.computed_total_tokens"
       + " FROM model_usage mu LEFT JOIN session s ON s.id = mu.session_id"
       + " WHERE mu.query_source = 'main_turn' AND mu.session_id NOT LIKE 'sess_subagent%'"
       + " AND COALESCE(s.time_archived, 0) = 0"
       + " ORDER BY mu.started_at"
     ).all();
-    const sess = new Map();               // session_id → 该会话的轮次(按 started_at 递增)
+    const bySess = new Map();             // session_id → 该会话的行(按 started_at 递增)
     for (const r of rows) {
-      let byTurn = sess.get(r.session_id);
-      if (!byTurn) { byTurn = new Map(); sess.set(r.session_id, byTurn); }
-      let t = byTurn.get(r.turn_id);
-      if (!t) { t = { at: r.started_at, n: 0, tokens: 0, cost: 0, pid: '', mid: '' }; byTurn.set(r.turn_id, t); }
-      t.n += 1;
-      t.tokens += r.tk || 0;
-      t.cost += costOf({ cacheReadTokens: r.cache_read_input_tokens || 0, inputTokens: r.input_tokens || 0, outputTokens: r.output_tokens || 0 }, r.provider_id, r.model_id, r.started_at);
-      t.pid = r.provider_id || ''; t.mid = r.model_id || '';   // 行按时间递增 ⇒ 最后落下的就是该轮最后用的模型
+      let a = bySess.get(r.session_id);
+      if (!a) { a = []; bySess.set(r.session_id, a); }
+      a.push(r);
     }
     const out = [];
-    for (const [sid, byTurn] of sess) {
+    for (const [sid, rs] of bySess) {
+      const byTurn = new Map();           // turn_id → 该轮合计
+      for (const r of rs) {
+        let t = byTurn.get(r.turn_id);
+        if (!t) { t = { at: r.started_at, n: 0, tokens: 0, cost: 0, pid: '', mid: '' }; byTurn.set(r.turn_id, t); }
+        t.n += 1;
+        t.tokens += r.tk || 0;
+        t.cost += costOf({ cacheReadTokens: r.cache_read_input_tokens || 0, inputTokens: r.input_tokens || 0, outputTokens: r.output_tokens || 0 }, r.provider_id, r.model_id, r.started_at);
+        t.pid = r.provider_id || ''; t.mid = r.model_id || '';   // 行按时间递增 ⇒ 最后落下的就是该轮最后用的模型
+      }
       const recent = [...byTurn.values()].slice(-want).reverse();   // 新的一轮排在前面
       if (!recent.length) continue;
       out.push({
         sid, at: recent[0].at,
+        agg: aggRows(rs),                 // ⚡本轮 / Σ累计 / 按家拆账(与菜单「💸 本会话」逐字同一份代码)
         turns: recent.map((t) => {
           // 订阅套餐(account: 开头)没有单价;未知 provider 没有价格表 ⇒ 这一轮不显费用
           const billed = !/^account:/i.test(t.pid) && !!priceFor(defFor(t.pid, t.mid), t.mid);
@@ -186,7 +201,7 @@ function recentBySession(n, maxSess) {
       });
     }
     out.sort((a, b) => b.at - a.at);
-    return out.slice(0, maxN);
+    return { items: out.slice(0, maxN), total: out.length, maxSess: maxN };
   } catch (_) { return null; }
 }
 
