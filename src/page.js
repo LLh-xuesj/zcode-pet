@@ -757,7 +757,7 @@ window.__tokPetDrop=dropFood;window.__tokPetWalk=startWalk; // 每拍重注册(�
 d._state=S;d._night=NIGHT?1:0;
 var bs=parseFloat(d.dataset.s)||0.55,bk=bs/0.55;
 if(d._bubble){d._bubble.style.fontSize=(12*bk).toFixed(1)+'px';d._bubble.style.padding=(6*bk).toFixed(1)+'px '+(8*bk).toFixed(1)+'px';d._bubble.style.marginBottom=(8*bk).toFixed(1)+'px';d._bubble.style.minWidth=(165*bk).toFixed(1)+'px';if(d._bubble._tail){d._bubble._tail.style.width=(10*bk).toFixed(1)+'px';d._bubble._tail.style.height=(10*bk).toFixed(1)+'px';d._bubble._tail.style.bottom=(-6*bk).toFixed(1)+'px';}if(d._bubble._satRow){d._bubble._satRow.style.gap=(3*bk).toFixed(1)+'px';d._bubble._satRow.style.marginTop=(4*bk).toFixed(1)+'px';d._bubble._satLbl.style.fontSize=(10*bk).toFixed(1)+'px';d._bubble._satBar.style.height=(8*bk).toFixed(1)+'px';d._bubble._satCap.style.fontSize=(9*bk).toFixed(1)+'px';if(d._bubble._mdl)d._bubble._mdl.style.fontSize=(9*bk).toFixed(1)+'px';}}
-var CLAMPV='3';   // 同上:守卫与赋值共用一个常量
+var CLAMPV='4';   // 同上:守卫与赋值共用一个常量(4:气泡避让顶部胶囊禁入带)
 if(window.__tokPetClampV!==CLAMPV){
   window.__tokPetClampV=CLAMPV;
   if(window.__tokPetClampTimer)clearInterval(window.__tokPetClampTimer); // 升版本重注册时先清旧循环,防双循环打架
@@ -766,7 +766,14 @@ if(window.__tokPetClampV!==CLAMPV){
     var b=d._bubble;if(!b||b.style.display==='none')return;
     var bk=parseFloat(d.dataset.s||'0.55')/0.55;
     var pr=d.getBoundingClientRect(),br=b.getBoundingClientRect();
-    var below=pr.top<br.height+12&&(innerHeight-pr.bottom)>pr.top;
+    // 顶部禁入带:ZCode 用 Computer Use 时会在屏幕顶正中显示「正在操作电脑」胶囊,
+    // 那个胶囊是主进程开的独立窗口(alwaysOnTop 'screen-saver',占屏幕顶部 6+56=62px),
+    // 页面里的元素永远压不过它 ⇒ 气泡伸进这条带就会被盖掉首行,所以按"去掉禁入带"的可用高度判断翻转。
+    var TOP_SAFE=64;
+    var gap=8*bk;                                   // 气泡与宠物之间的间距(随宠物大小缩放)
+    var roomAbove=pr.top-gap-TOP_SAFE;              // 上方可用高度(不含禁入带)
+    var roomBelow=innerHeight-pr.bottom-gap;        // 下方可用高度
+    var below=br.height>roomAbove&&roomBelow>=roomAbove; // 上方塞不下就翻到下面;两边都塞不下时选空间大的一侧
     b.dataset.pos=below?'below':'above';
     var t=b._tail;
     if(below){b.style.bottom='auto';b.style.top='100%';b.style.marginBottom='0px';b.style.marginTop=(8*bk).toFixed(1)+'px';
