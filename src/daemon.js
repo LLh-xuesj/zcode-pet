@@ -19,7 +19,8 @@ const petSlot = PS.petSlot, savePetState = PS.savePetState, petState = PS.petSta
       ACH_DEFS = PS.ACH_DEFS, levelOf = PS.levelOf, titleOf = PS.titleOf,
       gainFromTokens = PS.gainFromTokens, FEED_COOLDOWN = PS.FEED_COOLDOWN, MANUAL_FEED = PS.MANUAL_FEED;
 const dbStats = U.dbStats, turnStats = U.turnStats, newestRollout = U.newestRollout,
-      sessionIdOf = U.sessionIdOf, db = U.db, fmt = U.fmt, seenProviders = U.seenProviders;
+      sessionIdOf = U.sessionIdOf, db = U.db, fmt = U.fmt, seenProviders = U.seenProviders,
+      recentBySession = U.recentBySession;
 const resolveApi = B.resolveApi, queryBalance = B.queryBalance, readPlanQuota = B.readPlanQuota,
       pickPlanItem = B.pickPlanItem, fmtReset = B.fmtReset, fmtUnits = B.fmtUnits, balInfoFor = B.balInfoFor,
       retryBalance = B.retryBalance;
@@ -190,7 +191,10 @@ let lastFailTs = 0;
 //(症状:两个任务并行,先完成的那个一结束,实时工作气泡就消失、退回旧的"敲敲敲"工具反应)。
 // open=true 表示该会话的用户回合还没结束 —— 中间再长的空窗(模型思考/慢工具)也算工作中,气泡不会中途挥手。
 const turns = new Map();              // sessionId -> {open, phase:{code:'think'|'tool',tool,since}, lastAt}
-const TURN_STALE_MS = 180000;         // 该会话最后一条事件超过 3 分钟没动过,就当回合已悄悄结束(一天有 ~8 个崩在半路的僵尸回合,不兜住宠物会永久"工作中")
+const TURN_STALE_MS = 600000;         // 该会话最后一条事件超过 10 分钟没动过,才当回合已悄悄结束。
+                                      // 以前是 3 分钟:单个长操作(一次很慢的模型请求/一个跑几分钟的命令或渲染/
+                                      // 子代理长时间干活)中间**没有任何日志事件**,3 分钟一到段落就消失 —— 用户看到的
+                                      // "显示了一会就消失"。僵尸回合(崩在半路)的代价相应变成最多挂 10 分钟,可接受。
 const TURN_KEEP_MS = 30 * 60 * 1000;  // 会话记录最多留 30 分钟,防 Map 无限长
 let displaySess = null;               // 当前展示的会话:用户最近一次"发起回合"的那个
 function turnOf(sid) {
@@ -242,27 +246,80 @@ function workLine(t, now) {
 }
 // 会话标题(工作框里那一段叫什么)取自 ZCode 自己的库 session.title ——
 // 只读查询 + 60 秒缓存(标题会被用户改,缓存别太久;拿不到就退回短 id)。
-const sessMeta = new Map();           // sid -> {title, taskType, at}
+// parent 一起带出来:子代理(sess_subagent_*)的事件要喂给派它的父会话,父段落才不会在
+// 子代理长时间干活时消失(子代理按设计不单列,活算在父会话名下)。
+const sessMeta = new Map();           // sid -> {title, taskType, parent, at}
 const SESS_META_TTL = 60000;
 function sessionMeta(sid) {
   const c = sessMeta.get(sid);
   const now = Date.now();
   if (c && now - c.at < SESS_META_TTL) return c;
-  let rec = { title: '', taskType: '', at: now };
+  let rec = { title: '', taskType: '', parent: '', at: now };
   try {
     const conn = U.db();
     if (conn) {
-      const r = conn.prepare('SELECT title, task_type FROM session WHERE id = ?').get(sid);
-      if (r) rec = { title: String(r.title || ''), taskType: String(r.task_type || ''), at: now };
+      const r = conn.prepare('SELECT title, task_type, parent_id FROM session WHERE id = ?').get(sid);
+      if (r) rec = { title: String(r.title || ''), taskType: String(r.task_type || ''), parent: String(r.parent_id || ''), at: now };
     }
   } catch (_) {}
   if (sessMeta.size > 200) sessMeta.clear();
   sessMeta.set(sid, rec);
   return rec;
 }
+// 子代理的父会话(parent 永不变化,缓存可以久一点;查不到时退回 sessMeta 的 60 秒缓存)
+const sessParentCache = new Map();
+function sessParent(sid) {
+  if (sessParentCache.has(sid)) return sessParentCache.get(sid);
+  const par = sessionMeta(sid).parent || null;
+  if (par) sessParentCache.set(sid, par);
+  return par;
+}
 // 会话名太长就截断(气泡最宽 300px,名字行 10px 字,16 个字够用)
 function clipName(s) { s = String(s || '').trim().replace(/\s+/g, ' '); return s.length > 16 ? s.slice(0, 16) + '…' : s; }
 function shortSid(sid) { const m = /^sess_(.{6})/.exec(sid); return m ? m[1] : sid.slice(0, 6); }
+// 时间戳(「最近三轮」面板用):今天的只报时分秒,更早的带上月日 —— 一眼能分出"刚才"和"昨天"
+function clockTxt(ms) {
+  const d = new Date(ms || 0), n = new Date();
+  const p = (v) => (v < 10 ? '0' : '') + v;
+  const hms = p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  const sameDay = d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
+  return sameDay ? hms : (p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + hms.slice(0, 5));
+}
+// 「已隐藏的会话」名单:面板上的 ✕ 只是把这条记录从面板里藏起来,不动 ZCode 的用量库
+// (删库行会连 Σ 胶囊、本轮统计一起抹掉,而且不可逆)。名单落在守护数据目录,重启不丢。
+const HIDDEN_FILE = path.join(DATA_DIR, 'hidden-sessions.json');
+let hiddenSess = new Set();
+(function loadHidden() {
+  try {
+    const a = JSON.parse(fs.readFileSync(HIDDEN_FILE, 'utf8'));
+    if (Array.isArray(a)) hiddenSess = new Set(a.filter((x) => typeof x === 'string' && x));
+  } catch (_) {}
+})();
+function saveHidden() {
+  try { fs.writeFileSync(HIDDEN_FILE, JSON.stringify([...hiddenSess])); } catch (_) {}
+}
+function hideSession(sid) {
+  const s = String(sid || '').trim();
+  if (!s) return;
+  hiddenSess.add(s); saveHidden(); recentAt = 0;          // 立刻作废面板缓存,下一拍就不带它
+  ovr = { text: '🙈 已隐藏这个会话(面板底部能一键恢复)', until: Date.now() + 4000 };
+  injectNow();
+}
+function unhideAll() {
+  const n = hiddenSess.size;
+  hiddenSess.clear(); saveHidden(); recentAt = 0;
+  ovr = { text: n ? '♻ 已恢复 ' + n + ' 个隐藏的会话' : '本来就没有隐藏的会话', until: Date.now() + 3500 };
+  injectNow();
+}
+// 每个会话最近几轮(菜单「🕘 最近三轮」):走全表扫描,10 秒查一次就够,别跟着 1 秒的拍打库
+let recentCache = null, recentAt = 0;
+function recentRaw(now) {
+  if (recentCache && now - recentAt < 10000) return recentCache;
+  let data = null;
+  try { data = recentBySession(3, 6); } catch (_) { data = null; }
+  recentCache = data; recentAt = now;
+  return data;
+}
 // 每个会话自己的用量/拆账:多会话时菜单里一个会话一行。dbStats 按会话全量查询,30 秒缓存
 const sessStatsCache = new Map();     // sid -> {turn,turnCost,sum,sumCost,provTxt,at}
 function sessStatsFor(sid, now) {
@@ -356,6 +413,12 @@ function scanLogForFailures() {
         const ev = j && j.event;
         const sm = /"sessionId":"([^"]+)"/.exec(line);
         const sid = (sm && sm[1]) || (j && j.sessionId) || '(未知会话)';
+        // 子代理(sess_subagent_*)的事件喂给派它的父会话:父段落的活跃度靠它续命,
+        // 否则子代理一干就是几分钟、父会话自己没有任何事件,段落中途就消失
+        if (/^sess_subagent/.test(sid)) {
+          const par = sessParent(sid);
+          if (par) turnOf(par).lastAt = ts;
+        }
         const t = turnOf(sid);
         t.lastAt = ts;
         // 工具调用行的 context 里带 providerId/modelId(model.request.started 行没有)⇒ 从工具行顺手记下
@@ -364,8 +427,11 @@ function scanLogForFailures() {
         if (mp) t.provider = mp[1];
         const mm = /"modelId":"([^"]+)"/.exec(line);
         if (mm) t.model = mm[1];
-        if (ev === 'turn.phase.started' || ev === 'turn.started') {
-          if (!t.open) { t.phase = null; t.since = ts; }   // 新回合:清掉上一回合残留的阶段
+        if (ev === 'turn.started' || ev === 'turn.phase.started') {
+          // turn.started 是新回合的铁证,**总是**重置(上一回合可能崩在半路没发 completed,
+          // 不重置的话新回合的"阶段耗时"会从旧回合起算,越走越大);
+          // phase.started 只在"回合此前是关的"时重置,否则会把进行中的思考/工具阶段清掉
+          if (ev === 'turn.started' || !t.open) { t.phase = null; t.since = ts; }
           t.open = true;
           displaySess = sid;                               // 用户刚在这个会话发起回合 ⇒ 它就是"当前会话"
         } else if (ev === 'turn.completed') t.open = false;
@@ -669,9 +735,34 @@ async function tickOnce() {
       mdl: pid ? bigName(pid, mid) : '', sub: sub ? 1 : 0,
       billed: pid ? (!sub && !!priceFor(defFor(pid, mid), mid) ? 1 : 0) : 0,
       bal: balTxt, prov: sessStatsFor(it.sid, now).provTxt,
-      usg: (() => { const s = sessStatsFor(it.sid, now); return (s.turn ? s.turn + ' · ' : '') + s.sum + (s.sumCost ? ' ' + s.sumCost : ''); })(),
     };
   });
+  // 菜单「📊 各会话用量与最近三轮」:每个会话一行 Σ/本轮用量 + 最近 3 轮的 token/模型/时间戳。
+  // 会话按最近一轮排序,只列有 main_turn 记录的(子代理已在查询里排除,归档会话同理);
+  // 用户手动隐藏的会话也不列。在跑/当前会话分别打标记。
+  // 数据 10 秒一次(见 recentRaw),标记(●/在跑)每拍重算 —— 会话刚跑完,"在跑"立刻消失。
+  apiInfo.recent = (function () {
+    const data = recentRaw(now);
+    if (!data || !data.length) return null;
+    const busyOn = {};
+    for (const x of busySess) busyOn[x.sid] = 1;
+    const items = [];
+    for (const s of data) {
+      const m = sessionMeta(s.sid);
+      if (m.taskType && m.taskType !== 'interactive') continue;   // 派活/旁路会话不列(与工作框同口径)
+      if (hiddenSess.has(s.sid)) continue;                        // 用户在面板里 ✕ 掉的
+      const ss = sessStatsFor(s.sid, now);
+      items.push({
+        sid: s.sid, n: clipName(m.title) || ('#' + shortSid(s.sid)),
+        cur: s.sid === curVid ? 1 : 0, busy: busyOn[s.sid] ? 1 : 0,
+        // usg = 这个会话本轮 + 累计(与旧「📈 各会话用量」二级菜单同口径),prov = 累计按家拆账
+        usg: (ss.turn ? ss.turn + ' · ' : '') + ss.sum + (ss.sumCost ? ' ' + ss.sumCost : ''),
+        prov: ss.provTxt || '',
+        rows: s.turns.map((t) => ({ t: clockTxt(t.at), m: t.mid || '未知模型', u: fmt(t.tokens), c: t.costTxt, q: t.n, k: t.turn })),
+      });
+    }
+    return items.length ? { upd: clockTxt(recentAt), hid: hiddenSess.size, items } : null;
+  })();
   // 给在跑会话的各家 provider 补查余额(菜单用):内部有 25 秒 TTL,这里 5 拍一轮就够
   if (tick % 5 === 0) {
     for (const it of busySess) {
@@ -721,8 +812,6 @@ async function tickOnce() {
     if (!ws) {
       ws = new WebSocket(t.webSocketDebuggerUrl);
       ws.__born = Date.now();
-      bindName = '__tokPetEmit' + (++bindSeq); // 每次新会话换绑定名:旧会话遗留的同名绑定不会再吃掉事件
-      setBindName(bindName);
       sockets.set(t.id, ws);
       attachSocket(ws);
       ws.addEventListener('open', () => { try { ws.send(JSON.stringify({ id: ++msgId, method: 'Runtime.addBinding', params: { name: bindName } })); } catch (_) {} });
@@ -771,7 +860,15 @@ async function fastPoll(){
     }
   }finally{pollBusy=false}
 }
-let bindSeq=0, bindName=null, sendErr='';
+// 绑定名:整个进程固定,且每次启动都不同。以前是"每个新 CDP 会话换一个名",一旦某个窗口的会话
+// 晚建/重建,所有窗口注入的页面都会烘焙上同一个新名(见 page.js 的 var BIND=…),而那个窗口自己
+// 没注册过这个名字 ⇒ 该窗口的 emitReq 全部静默失效(喂养/签到/余额刷新/隐藏会话一起哑掉)。
+// 同名注册到多个会话最多造成重复投递,bindingCalled 里有 800ms 同内容去重兜着。
+const RUN_TAG = process.pid.toString(36) + '_' + Date.now().toString(36);
+const BIND_NAME = '__tokPetEmit_' + RUN_TAG;
+let bindName = BIND_NAME, sendErr='';
+setBindName(BIND_NAME);
+let lastEmitRaw = '', lastEmitAt = 0;
 let lastBalReqTs=0,lastClickReqTs=0,lastFeedReqTs=0,lastCheckinReqTs=0,lastPomReqTs=0,lastEggReqTs=0,fastPollPrimed=false;
 const emitTs = {}; // binding/localStorage 双通道去重
 // 换宠物:顺带把新宠的饱食度衰减起点重置,否则它按"建槽至今的分钟数"一次性掉饱食度(长期没激活的宠物一换过去就饿)
@@ -841,6 +938,8 @@ function handleEmit(k, v) {
     case 'slug': activatePet(v); break;
     case 'apiadd': handleApiAdd(v); break;
     case 'apidel': handleApiDel(v); break;
+    case 'hide': hideSession(v); break;          // 面板 ✕:只进本地隐藏名单,不删用量库
+    case 'unhide': unhideAll(); break;           // 面板底部「全部恢复」
   }
 }
 function attachSocket(ws) {
@@ -851,6 +950,9 @@ function attachSocket(ws) {
     }
     else if (m.method === 'Runtime.bindingCalled' && m.params && m.params.name === bindName) {
       const s = String(m.params.payload || '');
+      const nn = Date.now();
+      if (s === lastEmitRaw && nn - lastEmitAt < 800) return; // 同名绑定注册在多个会话上时会重复投递
+      lastEmitRaw = s; lastEmitAt = nn;
       const i = s.indexOf('|');
       if (i > 0) { try { handleEmit(s.slice(0, i), s.slice(i + 1)); } catch (_) {} }
     }

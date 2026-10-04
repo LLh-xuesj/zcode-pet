@@ -140,6 +140,56 @@ function dbStats(sessionId) {
   } catch (_) { return null; }   // 库忙/被占 → 保留上一次结果
 }
 
+// ---------- 每个会话最近几轮(右键菜单「🕘 最近三轮」用) ----------
+// 一轮 = 一个 turn_id:轮内每次请求的 token 相加(与 Σ 胶囊同口径,computed_total_tokens),
+// 模型与费用按该轮**最后一次**请求算(一轮里边聊边换模型极少见),时间取该轮第一次请求的 started_at。
+// 子代理会话(sess_subagent_*)不列:它们的活算在派它的父会话名下,工作框也不单列。
+// 归档会话(session.time_archived 非空)不列:用户在 ZCode 里归档了就是不想再看见它。
+// 一次全表扫描换回所有会话的成本很低(4k 行 <10ms),但没必要跟着 1 秒的拍走 —— 由调用方缓存。
+function recentBySession(n, maxSess) {
+  const conn = db();
+  if (!conn) return null;
+  const want = n > 0 ? n : 3, maxN = maxSess > 0 ? maxSess : 6;
+  try {
+    const rows = conn.prepare(
+      "SELECT mu.session_id, mu.turn_id, mu.provider_id, mu.model_id, mu.started_at,"
+      + " COALESCE(mu.computed_total_tokens, mu.input_tokens + mu.output_tokens) tk,"
+      + " mu.input_tokens, mu.output_tokens, mu.cache_read_input_tokens"
+      + " FROM model_usage mu LEFT JOIN session s ON s.id = mu.session_id"
+      + " WHERE mu.query_source = 'main_turn' AND mu.session_id NOT LIKE 'sess_subagent%'"
+      + " AND COALESCE(s.time_archived, 0) = 0"
+      + " ORDER BY mu.started_at"
+    ).all();
+    const sess = new Map();               // session_id → 该会话的轮次(按 started_at 递增)
+    for (const r of rows) {
+      let byTurn = sess.get(r.session_id);
+      if (!byTurn) { byTurn = new Map(); sess.set(r.session_id, byTurn); }
+      let t = byTurn.get(r.turn_id);
+      if (!t) { t = { at: r.started_at, n: 0, tokens: 0, cost: 0, pid: '', mid: '' }; byTurn.set(r.turn_id, t); }
+      t.n += 1;
+      t.tokens += r.tk || 0;
+      t.cost += costOf({ cacheReadTokens: r.cache_read_input_tokens || 0, inputTokens: r.input_tokens || 0, outputTokens: r.output_tokens || 0 }, r.provider_id, r.model_id, r.started_at);
+      t.pid = r.provider_id || ''; t.mid = r.model_id || '';   // 行按时间递增 ⇒ 最后落下的就是该轮最后用的模型
+    }
+    const out = [];
+    for (const [sid, byTurn] of sess) {
+      const recent = [...byTurn.values()].slice(-want).reverse();   // 新的一轮排在前面
+      if (!recent.length) continue;
+      out.push({
+        sid, at: recent[0].at,
+        turns: recent.map((t) => {
+          // 订阅套餐(account: 开头)没有单价;未知 provider 没有价格表 ⇒ 这一轮不显费用
+          const billed = !/^account:/i.test(t.pid) && !!priceFor(defFor(t.pid, t.mid), t.mid);
+          return { turn: t.turn_id, at: t.at, n: t.n, tokens: t.tokens, pid: t.pid, mid: t.mid,
+                   costTxt: billed ? fmtCost(t.cost, curOf(t.pid, t.mid)) : '' };
+        }),
+      });
+    }
+    out.sort((a, b) => b.at - a.at);
+    return out.slice(0, maxN);
+  } catch (_) { return null; }
+}
+
 function newestRollout() {
   let files;
   try { files = fs.readdirSync(ROLLOUT).filter((f) => /^model-io-sess_.+\.jsonl$/.test(f)); }
@@ -190,4 +240,4 @@ function turnStats(file) {
     };
   } catch (_) { return null; }
 }
-module.exports = { seenProviders, fmt, db, sessionIdOf, dbStats, newestRollout, turnStats };
+module.exports = { seenProviders, fmt, db, sessionIdOf, dbStats, recentBySession, newestRollout, turnStats };

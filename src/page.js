@@ -98,7 +98,10 @@ var PACK=EXT.pack||{};
 var BIND=${JSON.stringify(typeof bindName==='string'?bindName:'')};
 var SAT=EXT.sat||{pct:80,lv:1,title:''}, ACH=EXT.ach||{list:[],got:0,total:0}, POM=EXT.pom||null, NIGHT=EXT.night||0, FEEDTICK=(typeof EXT.feedTick==='number')?EXT.feedTick:0, CHECKIN=EXT.checkin||{done:0,streak:0};
 // 页面→守护请求:优先 CDP Binding 推送,localStorage 兜底(守护按时间戳去重)
-function emitReq(k,v){try{var f=BIND&&window[BIND];if(typeof f==='function')f(k+'|'+v)}catch(_){ }
+// 绑定名必须每次调用时从 window.__tokPetBind 现取,不能用本函数所在闭包里的 BIND:
+// 菜单是「MENUV 变了才重建」的常驻闭包(见下面 window.__tokPetMenuV 判断),而守护每次重启
+// 都会注册新的绑定名 ⇒ 旧闭包里烘焙的 BIND 会指向一个已经死掉的注册,请求静默丢失。
+function emitReq(k,v){try{var nb=window.__tokPetBind||BIND;var f=nb&&window[nb];if(typeof f==='function')f(k+'|'+v)}catch(_){ }
   // localStorage 兜底通道:必须写守护 fastPoll 真正读的键名(曾写成裸 k,导致菜单里的喂食/签到/番茄钟全部失效)
   try{var KEY={bal:'tokPetBalReq',click:'tokPetClickReq',feed:'tokPetFeedReq',checkin:'tokPetCheckinReq',pom:'tokPetPomReq',egg:'tokPetEggReq',slug:'tokPetSlug',apiadd:'tokPetApiAddReq',apidel:'tokPetApiDelReq'}[k]||k;localStorage.setItem(KEY,v)}catch(_){ }}
 // 本地点击回应:内容随注入下发,立刻显示,不等守护往返
@@ -236,7 +239,7 @@ var FR=${FRAMES_JSON};
 var PETS=${PETS_JSON};
 var SLUG=null;try{SLUG=localStorage.getItem('tokPetSlug')}catch(_){ }
 var PET=PETS.find(function(p){return p.slug===SLUG})||PETS[0];
-var VER='53';   // 页面模板版本:改了页面代码必须 +1。守卫与创建共用同一常量,避免两边写岔(曾因此不重建)
+var VER='56';   // 页面模板版本:改了页面代码必须 +1。守卫与创建共用同一常量,避免两边写岔(曾因此不重建)
 var d=document.getElementById('tok-pet');
 if(d&&d.dataset.v!==VER){d.remove();d=null;}
 if(!d){
@@ -378,7 +381,7 @@ function clampPet(){
 // 右键菜单:全局注册一次,版本号守卫(菜单定义不随元素重建)
 // ⚠ 守卫与赋值必须用同一个常量 MENUV:以前两处各写一个数字,只改一处就会出现
 //   "守卫永远不成立 → 每一拍都重新注册一遍菜单"的静默泄漏(每次注册都往 document 多加一个 contextmenu 监听)
-var MENUV='29';
+var MENUV='32';
 window.__tokPetBalLine=BALLINE;
 if(window.__tokPetMenuV!==MENUV){
   window.__tokPetMenuV=MENUV;
@@ -470,17 +473,113 @@ if(window.__tokPetMenuV!==MENUV){
           });
         });
       }
-      // 各会话用量:每个在跑的会话一行(⚡本轮 · Σ累计 费用)
-      var anyUsg=false;
-      for(var ui=0;ui<BUSY.length;ui++)if(BUSY[ui].usg)anyUsg=true;
-      if(anyUsg){
-        itemSub('📈 各会话用量('+BUSY.length+')',function(sub){
-          BUSY.forEach(function(b){
-            subRow(sub,(b.cur?'● ':'\u3000')+b.n+' · '+(b.usg||'—'),!!b.cur);
-          });
-        });
-      }
     }
+    // 各会话用量 + 最近三轮,合并在一个面板里(以前是"各会话用量"二级菜单 + "最近三轮"面板两处,
+    // 菜单太长;现在一个会话一段:标题(带 ✕ 隐藏)+ Σ/本轮用量 + 该会话最近 3 轮)。
+    // 数据由守护每 10 秒从 ZCode 的用量库(db.sqlite)取一次、随这一拍 payload 一起下来。
+    // ● = 统计气泡当前跟的那个会话;"在跑" = 这一刻它的回合还开着。
+    var REC=MD.recent||null;
+    item('📊 各会话用量与最近三轮'+(REC?('('+REC.items.length+' 个会话)'):''),function(){
+      var had=document.getElementById('tok-pet-recent');if(had)had.remove();
+      var rp=document.createElement('div');rp.id='tok-pet-recent';
+      rp.style.cssText='position:fixed;z-index:2147483647;padding:8px 10px;background:#f7e2b8;border:3px solid #6b4423;border-radius:6px;box-shadow:inset 0 0 0 2px #fdf3d9,inset 0 0 0 3px #d8b478,4px 4px 0 0 rgba(40,24,8,.45);font:600 11px/1.9 Consolas,ui-monospace,monospace;color:#4a3117;width:360px;max-height:calc(100vh - 24px);overflow:auto;';
+      function line(ri,t){
+        var e=document.createElement('div');e.style.cssText='display:flex;gap:6px;align-items:baseline;white-space:nowrap;';
+        var a1=document.createElement('span');a1.textContent=NUM[ri]||'·';a1.style.cssText='flex:0 0 auto;opacity:.6;';
+        var a2=document.createElement('span');a2.textContent=t.t;a2.style.cssText='flex:0 0 auto;color:#8a5a12;';
+        var a3=document.createElement('span');a3.textContent=t.m;a3.style.cssText='flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;';
+        var a4=document.createElement('span');a4.textContent=t.u+(t.c?' '+t.c:'');a4.style.cssText='flex:0 0 auto;color:#1f6076;';
+        e.title='这一轮发了 '+t.q+' 次请求';
+        e.appendChild(a1);e.appendChild(a2);e.appendChild(a3);e.appendChild(a4);
+        return e;
+      }
+      function foot(){
+        var f=document.createElement('div');
+        f.style.cssText='margin-top:5px;padding-top:5px;border-top:2px dashed #c09355;';
+        var e1=document.createElement('div');
+        e1.textContent='一轮 = 该轮所有请求的 token 相加 · 费用按该轮最后用的模型算(订阅套餐不显费用)';
+        e1.style.cssText='opacity:.6;white-space:normal;';f.appendChild(e1);
+        var e2=document.createElement('div');
+        e2.textContent='✕ = 不再显示这个会话的记录(不删 ZCode 的用量库,随时能恢复)';
+        e2.style.cssText='opacity:.6;white-space:normal;';f.appendChild(e2);
+        var nHid=hidN();
+        if(nHid){
+          var e3=document.createElement('div');
+          e3.textContent='🙈 已隐藏 '+nHid+' 个会话 · 点这里全部恢复';
+          e3.style.cssText='margin-top:3px;cursor:pointer;color:#a8451f;white-space:normal;';
+          e3.addEventListener('mouseenter',function(){e3.style.background='#efd4a0'});
+          e3.addEventListener('mouseleave',function(){e3.style.background='none'});
+          e3.addEventListener('click',function(e){e.stopPropagation();emitReq('unhide','all');window.__tokPetHid={};close();});
+          f.appendChild(e3);
+        }
+        return f;
+      }
+      var NUM=['①','②','③','④','⑤','⑥'];
+      // 这一刻隐藏了几个:守护记下的(上次面板打开之后藏的)+ 这次打开面板期间当场藏的
+      function hidN(){return ((REC&&REC.hid)||0)+localHid;}
+      function close(){
+        rp.remove();
+        document.removeEventListener('mousedown',cl,true);document.removeEventListener('keydown',ky,true);
+      }
+      var cl=function(e2){if(rp.contains(e2.target))return;close();};
+      var ky=function(e2){if(e2.key==='Escape')close();};
+      var localHid=0;
+      var h0=document.createElement('div');h0.textContent='📊 各会话用量与最近三轮'+(REC?(' · 更新于 '+REC.upd):'');
+      h0.style.cssText='color:#96500f;margin-bottom:4px;';rp.appendChild(h0);
+      var box=document.createElement('div');rp.appendChild(box);   // 可重画区:藏掉一个就当场把它那一段去掉
+      function draw(){
+        box.textContent='';
+        var items=((REC&&REC.items)||[]).filter(function(it){
+          return !it.hid && !(window.__tokPetHid||{})[it.sid];
+        });
+        if(!items.length){
+          var em=document.createElement('div');
+          em.textContent=REC?'这个列表里的会话都被你隐藏了(或都归档了)。':'没读到用量数据。守护读的是 ZCode 的 db.sqlite(MCP 进程用同一个库),库打不开或还没有任何回合记录时就是这样。';
+          em.style.cssText='white-space:normal;opacity:.75;';box.appendChild(em);
+        }
+        items.forEach(function(it,ii){
+          if(ii){var dv=document.createElement('div');dv.style.cssText='border-top:2px dashed #c09355;margin:5px 0 4px;';box.appendChild(dv);}
+          var hd=document.createElement('div');hd.style.cssText='display:flex;gap:6px;align-items:baseline;';
+          var hn=document.createElement('span');
+          hn.textContent=(it.cur?'● ':'\u3000')+it.n+(it.busy?' · 在跑':'');
+          hn.title=it.sid;
+          hn.style.cssText='flex:1 1 auto;color:#96500f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'+(it.cur?'':'opacity:.85;');
+          var hx=document.createElement('span');
+          hx.textContent='✕';hx.title='不再显示这个会话的记录(不删用量数据,可恢复)';
+          hx.style.cssText='flex:0 0 auto;cursor:pointer;color:#a8451f;padding:0 4px;border-radius:3px;';
+          hx.addEventListener('mouseenter',function(){hx.style.background='#efd4a0'});
+          hx.addEventListener('mouseleave',function(){hx.style.background='none'});
+          hx.addEventListener('click',function(e2){
+            e2.stopPropagation();
+            emitReq('hide',it.sid);                     // 守护落盘到 hidden-sessions.json
+            it.hid=1;localHid++;draw();                 // 当场把它那段去掉,不用等下一拍
+          });
+          hd.appendChild(hn);hd.appendChild(hx);box.appendChild(hd);
+          if(it.usg){
+            var lu=document.createElement('div');
+            lu.textContent=it.usg;lu.style.cssText='color:#1f6076;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+            lu.title='这个会话:本轮 · 累计';box.appendChild(lu);
+          }
+          if(it.prov&&it.prov!==it.usg){
+            var lp=document.createElement('div');
+            lp.textContent=it.prov;lp.style.cssText='opacity:.75;white-space:normal;word-break:break-all;';
+            lp.title='累计费用按家拆账';box.appendChild(lp);
+          }
+          (it.rows||[]).forEach(function(r2,ri){box.appendChild(line(ri,r2));});
+        });
+        if(ft0)ft0.remove();
+        ft0=foot();rp.appendChild(ft0);
+      }
+      var ft0=null;
+      draw();
+      document.body.appendChild(rp);
+      var r4=rp.getBoundingClientRect();
+      rp.style.left=Math.max(8,Math.min(ev.clientX,innerWidth-r4.width-8))+'px';
+      rp.style.top=Math.max(8,Math.min(ev.clientY-r4.height-8,innerHeight-r4.height-8))+'px';
+      setTimeout(function(){
+        document.addEventListener('mousedown',cl,true);document.addEventListener('keydown',ky,true);
+      },0);
+    });
     var curSlug=d.dataset.slug||PETS[0].slug;
     var curPet=PETS.find(function(pp){return pp.slug===curSlug})||PETS[0];
     function switchTo(slug){
@@ -644,6 +743,7 @@ d.dataset.slug=PET.slug;
   d.style.backgroundSize=(8*192*s1)+'px '+(PET.rows*208*s1)+'px';
 })();
 window.__tokPetSatPct=SAT.pct;window.__tokPetAch=ACH;window.__tokPetPomLeft=POM?POM.left:null;window.__tokPetCheckin=CHECKIN;window.__tokPetModel=EXT.model||null;window.__tokPetProv=(EXT.model&&EXT.model.provTxt)||'';
+window.__tokPetBind=BIND; // 每拍刷新:菜单那种常驻闭包靠它拿到当前有效的绑定名(emitReq 里读)
 window.__tokPetWx=${JSON.stringify(WEATHER.txt)}; // 天气诊断口
 window.__tokPetDrop=dropFood;window.__tokPetWalk=startWalk; // 每拍重注册(元素复用时创建分支不重跑)
 d._state=S;d._night=NIGHT?1:0;
