@@ -263,6 +263,17 @@ function sessionMeta(sid) {
 // 会话名太长就截断(气泡最宽 300px,名字行 10px 字,16 个字够用)
 function clipName(s) { s = String(s || '').trim().replace(/\s+/g, ' '); return s.length > 16 ? s.slice(0, 16) + '…' : s; }
 function shortSid(sid) { const m = /^sess_(.{6})/.exec(sid); return m ? m[1] : sid.slice(0, 6); }
+// 每个会话自己的「💸 按家拆账」:多会话时菜单里一个会话一行。dbStats 按会话全量查询,30 秒缓存
+const provCache = new Map();          // sid -> {txt, at}
+function provTxtFor(sid, now) {
+  const c = provCache.get(sid);
+  if (c && now - c.at < 30000) return c.txt;
+  let txt = '';
+  try { const s = dbStats(sid); if (s && s.provTxt) txt = s.provTxt; } catch (_) {}
+  if (provCache.size > 50) provCache.clear();
+  provCache.set(sid, { txt, at: now });
+  return txt;
+}
 
 function sweepTurns(now) {
   // 不管回合开没开,只要这么久没再动过就丢。光判 !t.open 是不够的:
@@ -609,11 +620,12 @@ async function tickOnce() {
         if (ip) balTxt = '📊 用' + (ip.total ? Math.round(((ip.used || 0) / ip.total) * 100) : 0) + '%';
       } else if (bb.kind === 'none') balTxt = '无余额接口';
     }
+    if (!balTxt && pid) balTxt = sub ? '额度没读到' : (P.getApiKey(pid) ? '获取中…' : '没配 key');
     return {
       sid: it.sid, n: clipName(it.title) || ('#' + shortSid(it.sid)), cur: it.sid === curVid ? 1 : 0,
       mdl: pid ? bigName(pid, mid) : '', sub: sub ? 1 : 0,
       billed: pid ? (!sub && !!priceFor(defFor(pid, mid), mid) ? 1 : 0) : 0,
-      bal: balTxt,
+      bal: balTxt, prov: provTxtFor(it.sid, now),
     };
   });
   // 给在跑会话的各家 provider 补查余额(菜单用):内部有 25 秒 TTL,这里 5 拍一轮就够

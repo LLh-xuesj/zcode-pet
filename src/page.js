@@ -378,7 +378,7 @@ function clampPet(){
 // 右键菜单:全局注册一次,版本号守卫(菜单定义不随元素重建)
 // ⚠ 守卫与赋值必须用同一个常量 MENUV:以前两处各写一个数字,只改一处就会出现
 //   "守卫永远不成立 → 每一拍都重新注册一遍菜单"的静默泄漏(每次注册都往 document 多加一个 contextmenu 监听)
-var MENUV='27';
+var MENUV='28';
 window.__tokPetBalLine=BALLINE;
 if(window.__tokPetMenuV!==MENUV){
   window.__tokPetMenuV=MENUV;
@@ -423,28 +423,54 @@ if(window.__tokPetMenuV!==MENUV){
     var curS=parseFloat(d.dataset.s||'0.55');if(scales.indexOf(curS)<0)curS=0.55;
     var BL=window.__tokPetBalLine;
     var MD=window.__tokPetModel||{};
-    item('🤖 当前模型:'+(MD.cur||'未知')+(MD.sub?' · 订阅':(MD.billed?' · API 按量':' · API 未配价')),function(){},true);
-    item('💰 '+(BL||'余额:使用 API 后显示'),function(){
-      emitReq('bal',String(Date.now()))
-    });
-    // 多会话并行:每个在跑的会话一行(会话名 · 模型 · 计费方式 · 该家余额/额度)。
-    // ● 标记统计气泡当前跟的那只;单会话时不出现(首两项就是它),行只是显示,点了不动作
+    // 多会话并行时,前 three 项(当前模型/余额/本会话拆账)各变一个二级菜单,每个在跑的会话一行;
+    // 单会话时维持老样子。● 标记统计气泡当前跟的那只。行都只是显示,点了不动作(余额菜单里的刷新行除外)
     var BUSY=(MD.busy||[]).filter(function(x){return x&&x.n;});
-    if(BUSY.length>1){
-      itemSub('🤖 各会话模型/余额('+BUSY.length+')',function(sub){
+    var MULTI=BUSY.length>1;
+    var mdlTxt='🤖 当前模型:'+(MD.cur||'未知')+(MD.sub?' · 订阅':(MD.billed?' · API 按量':' · API 未配价'));
+    var balTxt='💰 '+(BL||'余额:使用 API 后显示');
+    var PROV=window.__tokPetProv||'';
+    // 子菜单通用行:只显示
+    function subRow(sub,txt,dim,title,onClick){
+      var e=document.createElement('div');
+      e.textContent=txt;
+      if(title)e.title=title;
+      e.style.cssText='padding:4px 10px;border-radius:4px;cursor:default;white-space:nowrap;max-width:360px;overflow:hidden;text-overflow:ellipsis;'+(dim?'opacity:.6;':'');
+      e.addEventListener('mouseenter',function(){e.style.background='#efd4a0'});
+      e.addEventListener('mouseleave',function(){e.style.background='none'});
+      if(onClick)e.addEventListener('click',function(e2){e2.stopPropagation();m.remove();onClick();});
+      sub.appendChild(e);
+    }
+    if(!MULTI){
+      item(mdlTxt,function(){},true);
+      item(balTxt,function(){
+        emitReq('bal',String(Date.now()))
+      });
+      if(PROV)item('💸 本会话 '+PROV,function(){},true);
+    }else{
+      itemSub(mdlTxt,function(sub){
         BUSY.forEach(function(b){
-          var e=document.createElement('div');
-          e.textContent=(b.cur?'● ':'\u3000')+b.n+' · '+(b.mdl||'模型识别中')+(b.sub?' · 订阅':(b.billed?' · API 按量':' · API 未配价'))+(b.bal?' · '+b.bal:'');
-          e.title=b.bal?'':'这家的余额还没查到(有 key 会自动补查;没配 key 就显示不了)';
-          e.style.cssText='padding:4px 10px;border-radius:4px;cursor:default;white-space:nowrap;max-width:360px;overflow:hidden;text-overflow:ellipsis;'+(b.cur?'opacity:.7;':'');
-          e.addEventListener('mouseenter',function(){e.style.background='#efd4a0'});
-          e.addEventListener('mouseleave',function(){e.style.background='none'});
-          sub.appendChild(e);
+          subRow(sub,(b.cur?'● ':'\u3000')+b.n+' · '+(b.mdl||'模型识别中')+(b.sub?' · 订阅':(b.billed?' · API 按量':' · API 未配价')),!!b.cur);
         });
       });
+      itemSub(balTxt,function(sub){
+        subRow(sub,'↻ 刷新余额(当前那只)',false,'重新查一遍各家的余额/额度',function(){
+          emitReq('bal',String(Date.now()));
+        });
+        BUSY.forEach(function(b){
+          subRow(sub,(b.cur?'● ':'\u3000')+b.n+' · '+(b.bal||'—'),!!b.cur,b.bal?'':'这家的余额还没查到(有 key 会自动补查;没配 key 就显示不了)');
+        });
+      });
+      var anyProv=false;
+      for(var bi=0;bi<BUSY.length;bi++)if(BUSY[bi].prov)anyProv=true;
+      if(PROV||anyProv){
+        itemSub(PROV?('💸 本会话 '+PROV):'💸 本会话(各会话拆账)',function(sub){
+          BUSY.forEach(function(b){
+            subRow(sub,(b.cur?'● ':'\u3000')+b.n+' · '+(b.prov||'还没花钱'),!!b.cur);
+          });
+        });
+      }
     }
-    // 本会话按家拆账:Σ 胶囊只给总数,看不出钱花在哪家(用户 2026-10-03 反馈「一块多以为是千文/GLM 花的」)
-    if(window.__tokPetProv)item('💸 本会话 '+window.__tokPetProv,function(){},true);
     var curSlug=d.dataset.slug||PETS[0].slug;
     var curPet=PETS.find(function(pp){return pp.slug===curSlug})||PETS[0];
     function switchTo(slug){
