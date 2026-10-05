@@ -370,13 +370,36 @@ if(!d){
 }
 function clampPet(){
   if(!d)return;
-  var w=d.offsetWidth||105,h=d.offsetHeight||114;
+  // 尺寸兜底按当前缩放算:旧写死 105/114,宠物调大时夹不准(残留位置可从屏幕外侧"合法"地留着)
+  var s0=parseFloat(d.dataset.s);if(!isFinite(s0)||s0<=0)s0=0.55;
+  var w=d.offsetWidth||Math.round(192*s0),h=d.offsetHeight||Math.round(208*s0);
   var l=parseFloat(d.style.left),t=parseFloat(d.style.top);
   if(isNaN(l)||isNaN(t))return;
   var nl=Math.max(0,Math.min(l,innerWidth-w));
   var nt=Math.max(0,Math.min(t,innerHeight-h));
   if(nl!==l)d.style.left=nl+'px';
   if(nt!==t)d.style.top=nt+'px';
+}
+// 自愈(2026-10-05 用户报"工作框还是被截"):宠物本体一旦整个跑到视口之外(只剩气泡吊在屏幕顶边,
+// 看着就像被顶部那条带截掉了首行),或者尺寸塌成 0,没有任何循环会把它救回来 —— clampPet 只在创建/拖拽当时跑。
+// 这里每 300ms 兜一次:位置优先按 inline 值(不含拖拽 transform,免得和拖拽互抢),inline 值缺失才用 rect;
+// 尺寸塌了按 dataset.s 补回来(素材没加载/缩放值坏掉时靠这个复活)。
+function healPet(dd){
+  if(!dd||dd._drag)return;
+  var s=parseFloat(dd.dataset.s);if(!isFinite(s)||s<=0)s=0.55;
+  var w=Math.round(192*s),h=Math.round(208*s);
+  var r=dd.getBoundingClientRect();
+  if(r.width<20||r.height<20){
+    dd.style.width=w+'px';dd.style.height=h+'px';
+    dd.style.backgroundSize=(8*192*s)+'px '+(PET.rows*208*s)+'px';
+    r=dd.getBoundingClientRect();
+  }
+  var sl=parseFloat(dd.style.left),st=parseFloat(dd.style.top);
+  var curL=isFinite(sl)?sl:r.left,curT=isFinite(st)?st:r.top;
+  var nl=Math.max(0,Math.min(curL,innerWidth-w)),nt=Math.max(0,Math.min(curT,innerHeight-h));
+  if(Math.abs(nl-curL)>1||Math.abs(nt-curT)>1){
+    dd.style.left=nl.toFixed(1)+'px';dd.style.top=nt.toFixed(1)+'px';dd.style.right='auto';dd.style.bottom='auto';
+  }
 }
 // 右键菜单:全局注册一次,版本号守卫(菜单定义不随元素重建)
 // ⚠ 守卫与赋值必须用同一个常量 MENUV:以前两处各写一个数字,只改一处就会出现
@@ -757,12 +780,13 @@ window.__tokPetDrop=dropFood;window.__tokPetWalk=startWalk; // 每拍重注册(�
 d._state=S;d._night=NIGHT?1:0;
 var bs=parseFloat(d.dataset.s)||0.55,bk=bs/0.55;
 if(d._bubble){d._bubble.style.fontSize=(12*bk).toFixed(1)+'px';d._bubble.style.padding=(6*bk).toFixed(1)+'px '+(8*bk).toFixed(1)+'px';d._bubble.style.marginBottom=(8*bk).toFixed(1)+'px';d._bubble.style.minWidth=(165*bk).toFixed(1)+'px';if(d._bubble._tail){d._bubble._tail.style.width=(10*bk).toFixed(1)+'px';d._bubble._tail.style.height=(10*bk).toFixed(1)+'px';d._bubble._tail.style.bottom=(-6*bk).toFixed(1)+'px';}if(d._bubble._satRow){d._bubble._satRow.style.gap=(3*bk).toFixed(1)+'px';d._bubble._satRow.style.marginTop=(4*bk).toFixed(1)+'px';d._bubble._satLbl.style.fontSize=(10*bk).toFixed(1)+'px';d._bubble._satBar.style.height=(8*bk).toFixed(1)+'px';d._bubble._satCap.style.fontSize=(9*bk).toFixed(1)+'px';if(d._bubble._mdl)d._bubble._mdl.style.fontSize=(9*bk).toFixed(1)+'px';}}
-var CLAMPV='4';   // 同上:守卫与赋值共用一个常量(4:气泡避让顶部胶囊禁入带)
+var CLAMPV='5';   // 同上:守卫与赋值共用一个常量(5:宠物本体自愈 + 气泡整体夹进视口)
 if(window.__tokPetClampV!==CLAMPV){
   window.__tokPetClampV=CLAMPV;
   if(window.__tokPetClampTimer)clearInterval(window.__tokPetClampTimer); // 升版本重注册时先清旧循环,防双循环打架
   window.__tokPetClampTimer=setInterval(function(){
     var d=document.getElementById('tok-pet');if(!d)return;
+    healPet(d);   // 本体跑出视口/尺寸塌了先救回来:气泡是跟着本体定位的,本体在屏幕外气泡就会挂在屏幕边上被裁
     var b=d._bubble;if(!b||b.style.display==='none')return;
     var bk=parseFloat(d.dataset.s||'0.55')/0.55;
     var pr=d.getBoundingClientRect(),br=b.getBoundingClientRect();
@@ -786,6 +810,14 @@ if(window.__tokPetClampV!==CLAMPV){
     var pc=pr.left+pr.width/2,w=b.offsetWidth,rawLeft=pc-w/2;
     var wantLeft=Math.max(4,Math.min(rawLeft,innerWidth-4-w));
     b.style.transform='translateX(calc(-50% + '+(wantLeft-rawLeft).toFixed(1)+'px))';
+    // 气泡整体必须在视口内:贴到屏幕上/下边时补一点间距(否则首行会被屏幕边裁掉,看着像被上面那条带截了)。
+    // marginTop/Bottom 每拍都被上面重设成 8*bk,所以这里的加量是幂等的。
+    var br2=b.getBoundingClientRect(),PAD=4;
+    if(br2.top<PAD){var dy1=PAD-br2.top;
+      if(below)b.style.marginTop=(8*bk+dy1).toFixed(1)+'px';else b.style.marginBottom=Math.max(0,8*bk-dy1).toFixed(1)+'px';
+    }else if(br2.bottom>innerHeight-PAD){var dy2=br2.bottom-(innerHeight-PAD);
+      if(below)b.style.marginTop=Math.max(0,8*bk-dy2).toFixed(1)+'px';else b.style.marginBottom=(8*bk+dy2).toFixed(1)+'px';
+    }
   },300);
 }
 // 状态与气泡更新(拖拽中不打扰;摸头/喂食的临时动作优先;散步中不打断跑步动画)
